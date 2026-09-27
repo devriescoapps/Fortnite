@@ -8,7 +8,7 @@ import {
 } from '../shared/build';
 import { CollisionWorld, OwnerKind, Shape } from '../shared/collision';
 import {
-  BUILD_COST, BUILD_INTERVAL, DOWNED_BLEED, DOWNED_HEALTH, GRID, INPUT_DT, INTERACT_RANGE, MATCH_DEFAULTS, MAX_HEALTH, MAX_MATERIAL,
+  BUILD_COST, BUILD_INTERVAL, DOWNED_BLEED, DOWNED_HEALTH, GRID, INPUT_DT, INTERACT_RANGE, MATCH_DEFAULTS, MAX_HEALTH, MAX_LAG_COMP, MAX_MATERIAL,
   MAX_SHIELD, MOVE, Mode as GameMode, PICKUP_RANGE, REVIVE_HEALTH, REVIVE_TIME, SKYPORT, TEAM_SIZE, TICK_DT, TICK_RATE, WATER_LEVEL,
 } from '../shared/constants';
 import {
@@ -43,7 +43,7 @@ export interface Container extends ContainerInfo {
 
 interface Projectile {
   id: number;
-  kind: 0 | 1 | 2; // rocket, grenade, smoke
+  kind: 0 | 1 | 2 | 3; // rocket, grenade, smoke, bullet
   owner: number;
   x: number; y: number; z: number;
   vx: number; vy: number; vz: number;
@@ -51,6 +51,9 @@ interface Projectile {
   life: number;
   spec: ProjectileSpec;
   code: number;
+  rarity: number;
+  viewOffset: number; // ticks the shooter's view lagged behind the server (bullets)
+  dist: number; // distance travelled (bullet damage falloff / range)
 }
 
 interface Pad {
@@ -749,6 +752,18 @@ export class Match {
   private fireHitscan(p: ServerPlayer, e: Extract<SimEvent, { t: 'shot' }>, viewTick: number) {
     const def = ITEM_BY_CODE[e.code];
     const w = def.weapon!;
+    if (w.ballistic) {
+      // travelling bullets: simulated on the server, lag-compensated along the shooter's timeline
+      const off = Math.max(0, Math.min(MAX_LAG_COMP * TICK_RATE, this.tick - 1 - viewTick));
+      const spec: ProjectileSpec = { kind: 'bullet', speed: w.ballistic.speed, gravity: w.ballistic.gravity, fuse: 0, radius: 0, damage: weaponDamage(w, e.rarity), structure: weaponDamage(w, e.rarity) * w.structureMult };
+      for (let k = 0; k < e.dirs.length; k += 3) {
+        const sp = w.ballistic.speed;
+        this.spawnProjectile(p, 3, spec, e.code, e.ox, e.oy, e.oz, e.dirs[k] * sp, e.dirs[k + 1] * sp, e.dirs[k + 2] * sp, e.rarity, off);
+      }
+      const r2 = (v: number) => Math.round(v * 100) / 100;
+      this.broadcast({ e: 'shot', p: p.id, c: e.code, o: [r2(e.ox), r2(e.oy), r2(e.oz)], h: [] }, { x: e.ox, z: e.oz, r: 600, except: p.id });
+      return;
+    }
     const hits: number[][] = [];
     const perTarget = new Map<ServerPlayer, { dmg: number; head: boolean; x: number; y: number; z: number }>();
     for (let k = 0; k < e.dirs.length; k += 3) {
@@ -1124,8 +1139,8 @@ export class Match {
   // Projectiles & explosions
   // -------------------------------------------------------------------------
 
-  private spawnProjectile(p: ServerPlayer, kind: 0 | 1 | 2, spec: ProjectileSpec, code: number, x: number, y: number, z: number, vx: number, vy: number, vz: number) {
-    const pr: Projectile = { id: this.nextProjId++, kind, owner: p.id, x, y, z, vx, vy, vz, fuse: spec.fuse, life: 0, spec, code };
+  private spawnProjectile(p: ServerPlayer, kind: 0 | 1 | 2 | 3, spec: ProjectileSpec, code: number, x: number, y: number, z: number, vx: number, vy: number, vz: number, rarity = 0, viewOffset = 0) {
+    const pr: Projectile = { id: this.nextProjId++, kind, owner: p.id, x, y, z, vx, vy, vz, fuse: spec.fuse, life: 0, spec, code, rarity, viewOffset, dist: 0 };
     this.projectiles.set(pr.id, pr);
   }
 
@@ -1146,7 +1161,41 @@ export class Match {
       const dx = pr.vx / sp, dy = pr.vy / sp, dz = pr.vz / sp;
       const wh = this.world.raycast(pr.x, pr.y, pr.z, dx, dy, dz, len);
       const owner = this.players.get(pr.owner) ?? null;
-      if (pr.kind === 0) {
+      if (pr.kind === 3) {
+        const w = ITEM_BY_CODE[pr.code].weapon!;
+        const maxT = wh ? wh.t : len;
+        const ph = this.rayPlayers(owner, pr.x, pr.y, pr.z, dx, dy, dz, maxT, this.tick - 1 - pr.viewOffset);
+        const vh = this.rayVehicles(pr.x, pr.y, pr.z, dx, dy, dz, ph ? ph.t : maxT);
+        if (vh && (!ph || vh.t < ph.t)) {
+          if (owner) this.damageVehicle(vh.v, pr.spec.damage * damageFalloff(w, pr.dist + vh.t), owner);
+          this.projectiles.delete(pr.id);
+          return;
+        }
+        if (ph) {
+          if (owner) {
+            const hx = pr.x + dx * ph.t, hy = pr.y + dy * ph.t, hz = pr.z + dz * ph.t;
+            if (ph.head) owner.stats.headshots++;
+            const dmg = pr.spec.damage * damageFalloff(w, pr.dist + ph.t) * (ph.head ? w.headMult : 1);
+            this.applyDamage(ph.p, dmg, owner, { head: ph.head, code: pr.code, x: hx, y: hy, z: hz, cause: 'weapon' });
+          }
+          this.projectiles.delete(pr.id);
+          return;
+        }
+        if (wh) {
+          if (wh.collider) this.damageCollider(wh.collider.ownerKind, wh.collider.ownerId, pr.spec.structure, owner, false);
+          this.broadcast({ e: 'fx', k: 'spark', x: wh.x, y: wh.y, z: wh.z }, { x: wh.x, z: wh.z, r: 200, except: pr.owner });
+          this.projectiles.delete(pr.id);
+          return;
+        }
+        pr.x += pr.vx * dt;
+        pr.y += pr.vy * dt;
+        pr.z += pr.vz * dt;
+        pr.dist += len;
+        if (pr.dist > w.range) {
+          this.projectiles.delete(pr.id);
+          return;
+        }
+      } else if (pr.kind === 0) {
         const ph = this.rayPlayers(owner, pr.x, pr.y, pr.z, dx, dy, dz, wh ? wh.t : len, this.tick - 1);
         if (ph || wh) {
           const t = ph ? ph.t : wh!.t;
@@ -1183,11 +1232,11 @@ export class Match {
         pr.z += pr.vz * dt;
       }
     }
-    if (pr.y < -30 || pr.life > 8) {
+    if (pr.y < -30 || pr.life > (pr.kind === 3 ? 3 : 8)) {
       this.projectiles.delete(pr.id);
       return;
     }
-    if (pr.kind !== 0) {
+    if (pr.kind === 1 || pr.kind === 2) {
       pr.fuse -= dt;
       if (pr.fuse <= 0) {
         this.projectiles.delete(pr.id);
@@ -1916,6 +1965,7 @@ export class Match {
       const projs: ProjSnap[] = [];
       for (const pr of this.projectiles.values()) {
         if (Math.hypot(pr.x - view.x, pr.z - view.z) > 450) continue;
+        if (pr.kind === 3 && pr.owner === p.id && !p.eliminated) continue; // shooter predicts its own bullets
         projs.push({ id: pr.id, kind: pr.kind, x: pr.x, y: pr.y, z: pr.z });
       }
       let drive: Snapshot['drive'] = null;

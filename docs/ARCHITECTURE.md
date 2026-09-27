@@ -74,6 +74,10 @@ with a smoothed offset.
   300 ms) when testing hitscan rays and melee.
 - Shot directions (including spread and shotgun pellets) are derived from a seed
   `hash(playerId, shotSeq)`, so client tracers and server hits agree without sending directions.
+- Sniper rounds are ballistic projectiles simulated by the server (speed + gravity). Each bullet
+  remembers the shooter's view lag at the moment of firing and tests targets on that rewound
+  timeline for its whole flight. The shooter renders a predicted bullet immediately and is not
+  sent the server copy; other clients see it through snapshots.
 
 ### Interest management & bandwidth
 - Snapshots include players within 420 m (always teammates and the spectated player), vehicles

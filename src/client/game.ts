@@ -21,7 +21,7 @@ import { Net } from './net';
 import { CharacterModel } from './render/characters';
 import { Effects } from './render/effects';
 import { Environment } from './render/environment';
-import { LootRenderer, PieceRenderer, PropRenderer, VehicleRenderer } from './render/worldview';
+import { LootRenderer, PieceRenderer, ProjectileRenderer, PropRenderer, VehicleRenderer } from './render/worldview';
 import { IS_MOBILE, Settings, loadSettings, loadToken, saveSettings, saveToken } from './settings';
 import { Hud, TeamRow } from './ui/hud';
 import { Menus, PartyInfo, PublicProfile } from './ui/menus';
@@ -118,6 +118,7 @@ export class Game {
   pieces!: PieceRenderer;
   loot!: LootRenderer;
   vehicles!: VehicleRenderer;
+  projectiles!: ProjectileRenderer;
   fx!: Effects;
   hud!: Hud;
   menus!: Menus;
@@ -176,6 +177,25 @@ export class Game {
     this.loot = new LootRenderer(this.scene);
     this.vehicles = new VehicleRenderer(this.scene);
     this.fx = new Effects(this.scene, document.getElementById('numbers')!);
+    this.projectiles = new ProjectileRenderer(this.scene);
+    this.projectiles.onTrail = (kind, p) => {
+      if (kind === 0) this.fx.trail(p.x, p.y, p.z, 0xffb347, 0.35);
+      else if (kind === 3) this.fx.trail(p.x, p.y, p.z, 0xfff2c0, 0.12);
+      else if (kind === 2) this.fx.trail(p.x, p.y, p.z, 0xb388ff, 0.2);
+    };
+    this.projectiles.raycast = (o, d, max) => {
+      const hit = this.world.raycast(o.x, o.y, o.z, d.x, d.y, d.z, max);
+      let t = hit ? hit.t : Infinity;
+      for (const r of this.m?.remotes.values() ?? []) {
+        const vx = r.pos.x - o.x, vy = r.pos.y + 1 - o.y, vz = r.pos.z - o.z;
+        const along = vx * d.x + vy * d.y + vz * d.z;
+        if (along <= 0 || along > Math.min(t, max)) continue;
+        const px = vx - d.x * along, py = vy - d.y * along, pz = vz - d.z * along;
+        if (px * px + pz * pz < 0.3 && Math.abs(py) < 1) t = along;
+      }
+      return t <= max ? t : null;
+    };
+    this.projectiles.onImpact = (p) => this.fx.burst(p.x, p.y, p.z, 4, 0xfff0b0, 3, 0.25, 0.08);
     for (const p of this.grid.pieces.values()) this.pieces.add(p, 0);
     for (const [i, lp] of this.map.launchPads.entries()) this.loot.addPad(1000 + i, lp.x, lp.y, lp.z);
     this.painter = new MapPainter(this.terrain);
@@ -400,6 +420,7 @@ export class Game {
     this.props.restoreAll();
     this.loot.clear();
     this.vehicles.clear();
+    this.projectiles.clear();
     const removed = new Set(init.removedMapPieces);
     for (const id of removed) this.grid.remove(id);
     for (const [id, hp] of init.damagedMapPieces) {
@@ -475,6 +496,7 @@ export class Game {
     this.props.restoreAll();
     this.loot.clear();
     this.vehicles.clear();
+    this.projectiles.clear();
     this.vehicles.setBus(null, 0);
     for (const p of this.grid.pieces.values()) this.pieces.add(p, 0);
     for (const [i, lp] of this.map.launchPads.entries()) this.loot.addPad(1000 + i, lp.x, lp.y, lp.z);
@@ -694,7 +716,8 @@ export class Game {
         this.fx.smoke(e.x, e.y, e.z, e.r, e.d, this.clock);
         break;
       case 'fx':
-        this.fx.burst(e.x, e.y, e.z, 8, 0xc8904f, 4, 0.5, 0.14);
+        if (e.k === 'spark') this.fx.burst(e.x, e.y, e.z, 4, 0xfff0b0, 3, 0.25, 0.08);
+        else this.fx.burst(e.x, e.y, e.z, 8, 0xc8904f, 4, 0.5, 0.14);
         break;
       case 'storm': {
         const prevStage = m.storm.stage;
@@ -846,7 +869,8 @@ export class Game {
         m.remotes.delete(id);
       }
     }
-    // vehicles
+    // vehicles & projectiles
+    this.projectiles.sync(s.projs, s.time);
     this.vehicles.sync(s.vehicles, s.time);
     m.vehicles.clear();
     for (const v of s.vehicles) m.vehicles.set(v.id, { x: v.x, y: v.y, z: v.z, speed: v.speed });
@@ -951,6 +975,7 @@ export class Game {
       this.vehicles.setBus(m.phase === 'bus' && m.busPos ? m.busPos : null, dt);
       this.vehicles.predicted = m.drive;
       this.vehicles.update(dt, this.serverNow() - INTERP_DELAY);
+      this.projectiles.update(dt, this.serverNow() - INTERP_DELAY);
     } else {
       this.input.consumeActions();
       this.input.consumeLook();
@@ -1099,7 +1124,8 @@ export class Game {
       this.hud.openInventory(m.sim.inv.slots, m.sim.inv.ammo, m.sim.inv.mats, m.sim.slot);
     } else {
       this.hud.closeInventory();
-      if (!IS_MOBILE && !this.paused) this.input.requestLock();
+      // never grab the cursor while a menu (e.g. the results screen) needs it
+      if (!IS_MOBILE && !this.paused && !m.eliminated && !this.menus.overlayKind) this.input.requestLock();
     }
   }
 
@@ -1241,7 +1267,14 @@ export class Game {
         const f = forwardFromYawPitch(s.yaw, s.pitch);
         const muzzle = o.clone().add(new THREE.Vector3(f.x * 0.9, f.y * 0.9, f.z * 0.9));
         this.fx.muzzle(muzzle, w.cls === 'shotgun' || w.cls === 'sniper');
-        for (let k = 0; k < e.dirs.length; k += 3) {
+        if (w.ballistic) {
+          // predicted bullet: starts at the true firing origin so its path matches the server's
+          for (let k = 0; k < e.dirs.length; k += 3) {
+            const sp = w.ballistic.speed;
+            this.projectiles.spawnLocal(new THREE.Vector3(e.ox, e.oy, e.oz), new THREE.Vector3(e.dirs[k] * sp, e.dirs[k + 1] * sp, e.dirs[k + 2] * sp), w.ballistic.gravity, w.range);
+          }
+        }
+        for (let k = 0; !w.ballistic && k < e.dirs.length; k += 3) {
           const dx = e.dirs[k], dy = e.dirs[k + 1], dz = e.dirs[k + 2];
           const hit = this.world.raycast(e.ox, e.oy, e.oz, dx, dy, dz, Math.min(w.range, 300));
           // stop tracers at remote players too (visual only; damage is server-side)
@@ -1684,6 +1717,7 @@ export class Game {
     const px = (spread / this.camera.fov) * window.innerHeight * 0.5;
     this.hud.crosshair(px, showCross, !!(s.ads && w && w.cls === 'sniper' && w.zoom > 3));
     this.hud.spectate(m.eliminated && spec ? spec.info.name : null);
+    this.hud.root.classList.toggle('spec', m.eliminated);
     if (this.settings.showFps) this.hud.fps(`${this.fpsAcc.fps.toFixed(0)} fps · ${this.net.rtt.toFixed(0)} ms · ${m.pending.length} pending`);
     else this.hud.fps(null);
     // minimap (10 Hz)

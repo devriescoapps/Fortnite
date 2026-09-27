@@ -285,3 +285,6 @@ body.touch #touch .t-build-row { top: auto; bottom: 190px; right: 18px; flex-dir
 @media (orientation: portrait) {
   body.touch .hud-bc { transform: translateX(-50%) scale(.5); }
 }
+
+/* spectator mode hides the (dead) local player's inventory */
+#hud.spec .hud-bc, #hud.spec .mats, #hud.spec .hud-br, #hud.spec #crosshair { display: none; }

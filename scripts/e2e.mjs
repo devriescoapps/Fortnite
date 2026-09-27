@@ -234,6 +234,29 @@ await page.waitForTimeout(20000);
 await page.evaluate(() => { clearInterval(window.__fight); window.game.input.lmb = false; window.game.input.keys.clear(); });
 console.log('after fight', await state());
 await shot('10-fight');
+// Ballistic sniper: the shooter sees a predicted bullet immediately; the server simulates the real one
+const sniper = await page.evaluate(async () => {
+  const g = window.game, m = g.m;
+  if (!m || m.eliminated) return null;
+  g.net.send({ t: 'dev', cmd: 'give', id: 'marksman', rarity: 2 });
+  g.net.send({ t: 'dev', cmd: 'give', id: 'ammo_heavy' });
+  await new Promise((r) => setTimeout(r, 800));
+  const wi = m.sim.inv.slots.findIndex((x) => x && x.code === 8);
+  if (wi <= 0) return { given: false };
+  m.slotReq = wi;
+  await new Promise((r) => setTimeout(r, 900));
+  g.view.pitch = 0.05;
+  let maxLocal = 0;
+  for (let i = 0; i < 3; i++) {
+    g.input.lmb = true;
+    await new Promise((r) => setTimeout(r, 120));
+    g.input.lmb = false;
+    maxLocal = Math.max(maxLocal, g.projectiles.locals.length);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { given: true, maxLocal, mag: m.sim.inv.slots[wi]?.mag };
+});
+console.log('sniper', JSON.stringify(sniper));
 // Vehicles: hop next to a Rover, get in, drive (client-predicted), get out
 const drove = await page.evaluate(async () => {
   const g = window.game, m = g.m;
@@ -277,8 +300,15 @@ const died = await page.evaluate(() => window.game.m?.eliminated);
 if (died) {
   await page.waitForSelector('#lobby', { timeout: 15000 }).catch(() => {});
   await shot('12-results');
+  console.log('death', await page.evaluate(() => ({ feed: document.querySelector('.feed')?.textContent, results: window.game.m?.results && { placement: window.game.m.results.placement, survived: window.game.m.results.survived } })));
   const spec = await page.$('#spec');
   if (spec) {
+    const hit = await spec.evaluate((b) => {
+      const r = b.getBoundingClientRect();
+      const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return { rect: [r.x, r.y, r.width, r.height], hit: el ? `${el.tagName}#${el.id}.${el.className}[${el.dataset?.kind ?? ''}]` : null, overlays: [...document.querySelectorAll('.overlay')].map((o) => o.dataset.kind ?? o.className) };
+    });
+    console.log('spectate button', JSON.stringify(hit));
     await spec.click();
     await page.waitForTimeout(2500);
     console.log('spectating', await page.evaluate(() => ({ target: window.game.m?.spectating, name: document.querySelector('.spec-bar')?.textContent })));

@@ -78,7 +78,8 @@ the server resolves them (`server/match.ts`), the client renders them.
 ```ts
 WeaponStats { cls, ammo, damage, headMult, interval, auto, burst, burstInterval, pellets, mag, reload,
               spreadHip, spreadAds, bloomPerShot, bloomMax, bloomRecover, recoil, range,
-              falloffStart, falloffEnd, falloffMin, structureMult, zoom, equipTime, projectile?, meleeRange?, knockback? }
+              falloffStart, falloffEnd, falloffMin, structureMult, zoom, equipTime, projectile?, meleeRange?, knockback?,
+              ballistic?: { speed, gravity } }
 ItemStack { code, rarity, count, mag }
 Hitbox by mode: standing body box 0–1.45 m + head sphere (r 0.3 @ 1.62 m); crouch/downed/swim variants.
 ```
@@ -87,7 +88,12 @@ Rarity multipliers: damage ×1.00–1.22, reload ×1.00–0.80, spread ×1.00–
 **Networking considerations.** No hit claims from clients. Each input carries `viewTick`; the
 server rewinds other players' hitboxes (≤ 300 ms) for hitscan and melee. Spread/pellets use a
 deterministic per-shot seed (`hash(playerId, shotSeq)`) so tracers match server hits. Remote
-players receive `shot` events (origin + impact points) within 400 m; the shooter receives
+players receive `shot` events (origin + impact points) within 400 m. Sniper rounds are
+**ballistic**: the server spawns a bullet projectile (speed + gravity) that it steps at 60 Hz,
+and every step tests targets rewound to the shooter's `viewTick` timeline (shot tick − the
+shooter's view lag), so what the shooter saw is what the bullet flies through. The shooter
+predicts its own bullet locally (same origin/velocity) and is left out of that projectile's
+replication; everyone else sees it via snapshots and gets impact sparks. The shooter receives
 `hit` confirmations (damage numbers, headshot markers); victims receive `hurt` with the
 attacker direction.
 
@@ -103,14 +109,16 @@ knocks down (crawl, 3 hp/s bleed, revive), otherwise eliminates (drops all loot)
 · ✅ hitscan + lag compensation · ✅ projectiles (rocket, bouncing grenades, smoke) · ✅ melee +
 knockback · ✅ damage model (shield, head, falloff, structures) · ✅ knock/revive/eliminate ·
 ✅ feedback (tracers, flashes, hit markers, damage numbers, direction indicator, kill feed,
-recoil, sounds) · ⏭ projectile ballistics with lag-compensated projectiles for snipers ·
-⏭ weapon attachments / per-weapon recoil patterns.
+recoil, sounds) · ✅ ballistic sniper bullets (travel time + drop, shooter-timeline lag
+compensation, client-predicted bullet, bots lead and compensate drop) · ⏭ weapon attachments /
+per-weapon recoil patterns.
 
 **Testing requirements.** Fire-rate/reload/ammo accounting; deterministic pellet spread;
 lag-comp rewind hits the past position and misses the current one; shield-first damage;
-elimination awards and loot drops; knock → revive → team wipe.
+elimination awards and loot drops; knock → revive → team wipe; sniper bullets are not instant,
+fall under gravity and hit after their flight time.
 Covered by `tests/sim.test.ts` (fire rate, reload, pellet determinism) and
-`tests/systems.test.ts` (rewind, shields/eliminations/results, revive/wipe).
+`tests/systems.test.ts` (rewind, ballistic bullets, shields/eliminations/results, revive/wipe).
 
 ---
 

@@ -696,11 +696,20 @@ export class BotBrain {
     const ty = ey + (e.downed ? 0.35 : aimHead ? 1.6 : e.sim.crouch ? 0.8 : 1.15);
     const eyeY = s.y + (s.crouch ? 1.05 : 1.6);
     const dx = ex - s.x, dz = ez - s.z;
-    // lead moving targets a little
-    const lead = w && w.cls === 'sniper' ? 0.12 : 0.04;
-    const lx = dx + e.sim.vx * lead * dist * 0.1, lz = dz + e.sim.vz * lead * dist * 0.1;
+    // lead moving targets; ballistic weapons also compensate for travel time and bullet drop
+    let lx: number, lz: number, drop = 0;
+    if (w?.ballistic) {
+      const t = dist / w.ballistic.speed;
+      const k = 0.6 + this.skill * 0.4; // weaker bots under-lead
+      lx = dx + e.sim.vx * t * k;
+      lz = dz + e.sim.vz * t * k;
+      drop = 0.5 * w.ballistic.gravity * t * t * k;
+    } else {
+      lx = dx + e.sim.vx * 0.004 * dist;
+      lz = dz + e.sim.vz * 0.004 * dist;
+    }
     this.wantYaw = Math.atan2(-lx, -lz) + this.aimErrY;
-    this.wantPitch = Math.atan2(ty - eyeY, Math.max(0.5, dist)) + this.aimErrP;
+    this.wantPitch = Math.atan2(ty + drop - eyeY, Math.max(0.5, dist)) + this.aimErrP;
     const yawErr = Math.abs(wrapAngle(this.wantYaw - this.aimErrY - this.yaw));
     const tol = Math.atan2(0.7, Math.max(1, dist)) + 0.03;
 

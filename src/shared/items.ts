@@ -23,7 +23,7 @@ export const AMMO_NAMES: Record<AmmoType, string> = {
 export const AMMO_MAX: Record<AmmoType, number> = { light: 360, medium: 300, heavy: 60, shells: 60, rockets: 12 };
 
 export interface ProjectileSpec {
-  kind: 'rocket' | 'grenade' | 'smoke';
+  kind: 'rocket' | 'grenade' | 'smoke' | 'bullet';
   speed: number;
   gravity: number;
   fuse: number; // seconds (0 = impact)
@@ -58,6 +58,8 @@ export interface WeaponStats {
   zoom: number; // FOV divisor while aiming
   equipTime: number;
   projectile?: ProjectileSpec;
+  /** Bullets travel with finite speed and drop (snipers) instead of instant hitscan. */
+  ballistic?: { speed: number; gravity: number };
   meleeRange?: number;
   knockback?: number;
 }
@@ -148,12 +150,12 @@ export const ITEMS: ItemDef[] = [
   {
     id: 'longshot', code: 7, name: 'Longshot Bolt', category: 'weapon', rarities: [2, 3, 4], stack: 1,
     desc: 'Bolt-action sniper with a powerful scope.',
-    weapon: W({ cls: 'sniper', ammo: 'heavy', damage: 105, headMult: 2.5, interval: 1.3, auto: false, mag: 1, reload: 2.6, spreadHip: 7, spreadAds: 0, bloomPerShot: 0, recoil: 5, range: 800, falloffStart: 800, falloffEnd: 800, falloffMin: 1, zoom: 3.6, equipTime: 0.5 }),
+    weapon: W({ cls: 'sniper', ammo: 'heavy', damage: 105, headMult: 2.5, interval: 1.3, auto: false, mag: 1, reload: 2.6, spreadHip: 7, spreadAds: 0, bloomPerShot: 0, recoil: 5, range: 800, falloffStart: 800, falloffEnd: 800, falloffMin: 1, zoom: 3.6, equipTime: 0.5, ballistic: { speed: 340, gravity: 14 } }),
   },
   {
     id: 'marksman', code: 8, name: 'Marksman DMR', category: 'weapon', rarities: [1, 2, 3, 4], stack: 1,
     desc: 'Semi-auto marksman rifle for mid-long range.',
-    weapon: W({ cls: 'sniper', ammo: 'heavy', damage: 46, headMult: 2, interval: 0.38, auto: false, mag: 10, reload: 2.4, spreadHip: 4, spreadAds: 0.15, bloomPerShot: 0.6, bloomMax: 3, recoil: 1.6, range: 600, falloffStart: 200, falloffEnd: 400, falloffMin: 0.8, zoom: 2.4, equipTime: 0.45 }),
+    weapon: W({ cls: 'sniper', ammo: 'heavy', damage: 46, headMult: 2, interval: 0.38, auto: false, mag: 10, reload: 2.4, spreadHip: 4, spreadAds: 0.15, bloomPerShot: 0.6, bloomMax: 3, recoil: 1.6, range: 600, falloffStart: 200, falloffEnd: 400, falloffMin: 0.8, zoom: 2.4, equipTime: 0.45, ballistic: { speed: 280, gravity: 14 } }),
   },
   {
     id: 'pip', code: 9, name: 'Pip Pistol', category: 'weapon', rarities: [0, 1, 2], stack: 1,

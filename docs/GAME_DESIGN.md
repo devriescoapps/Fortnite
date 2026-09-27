@@ -57,8 +57,8 @@ skydive (dive to fall faster) → auto glider at 85 m → loot → fight → Sur
 | Hornet Compact | SMG | R–L | 12 | 15 | 40 | 2.2 s | Huge mag, wild bloom |
 | Thumper Pump | Shotgun | C–L | 9 ×10 pellets | 1.05 | 5 | 4.2 s | ×2 headshots |
 | Rattler Auto | Shotgun | U–E | 8 ×8 pellets | 1.8 | 8 | 5.0 s | Fast follow-ups |
-| Longshot Bolt | Sniper | R–L | 105 | 0.77 | 1 | 2.6 s | ×2.5 headshots, 3.6× scope |
-| Marksman DMR | Sniper | U–L | 46 | 2.6 | 10 | 2.4 s | Semi-auto, 2.4× scope |
+| Longshot Bolt | Sniper | R–L | 105 | 0.77 | 1 | 2.6 s | ×2.5 headshots, 3.6× scope, ballistic 340 m/s |
+| Marksman DMR | Sniper | U–L | 46 | 2.6 | 10 | 2.4 s | Semi-auto, 2.4× scope, ballistic 280 m/s |
 | Pip Pistol | Pistol | C–R | 23 | 6.2 | 16 | 1.4 s | Forgiving sidearm |
 | Mauler Revolver | Pistol | R–L | 58 | 1.5 | 6 | 2.2 s | Hand cannon |
 | Boomtube | Explosive | R–L | 100 splash | 0.8 | 1 | 3.0 s | Rocket; 450 structure damage |

@@ -152,6 +152,41 @@ describe('combat & lag compensation', () => {
     expect(Math.abs(clamped.x - b.sim.x)).toBeLessThan(3.01);
   });
 
+  it('sniper bullets are ballistic: they travel, drop, and hit only after flight time', () => {
+    const { m, players } = playingMatch('solo', [[1], [2]]);
+    const [a] = players[0];
+    const [b] = players[1];
+    m.dev(a, { cmd: 'teleport', x: -30, z: 150 });
+    m.dev(b, { cmd: 'teleport', x: -30, z: 80 });
+    for (let i = 0; i < 20; i++) m.update();
+    b.sim.shield = 100;
+    m.dev(a, { cmd: 'give', id: 'longshot', rarity: 2 });
+    const slot = a.sim.inv.slots.findIndex((x) => x && ITEM_BY_CODE[x.code].id === 'longshot');
+    const w = ITEM_BY_ID.longshot.weapon!;
+    const eyeY = a.sim.y + 1.6;
+    const dist = Math.hypot(b.sim.x - a.sim.x, b.sim.z - a.sim.z);
+    const tFlight = dist / w.ballistic!.speed;
+    const drop = 0.5 * w.ballistic!.gravity * tFlight * tFlight;
+    expect(m.world.raycast(a.sim.x, eyeY, a.sim.z, 0, (b.sim.y + 1.1 - eyeY) / dist, -1, dist)).toBeNull();
+    // aim at the chest, compensating for drop; yaw 0 faces -Z (b is due north)
+    const pitch = Math.atan2(b.sim.y + 1.1 + drop - eyeY, dist);
+    feed(m, a, { slot, pitch, buttons: BTN.ADS }, 40); // equip + scope in
+    for (let i = 0; i < 3; i++) m.update();
+    feed(m, a, { slot, pitch, buttons: BTN.ADS | BTN.FIRE }, 1);
+    m.update();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const projs = [...(m as any).projectiles.values()] as { kind: number; owner: number; y: number; vy: number }[];
+    const bullet = projs.find((x) => x.kind === 3 && x.owner === a.id);
+    expect(bullet).toBeDefined();
+    expect(b.sim.shield).toBe(100); // not instant
+    const vy0 = bullet!.vy;
+    m.update();
+    expect(bullet!.vy).toBeLessThan(vy0); // gravity
+    for (let i = 0; i < Math.ceil(tFlight * TICK_RATE) + 3; i++) m.update();
+    expect(b.sim.shield).toBeLessThan(100);
+    expect(a.stats.damage).toBeGreaterThan(0);
+  });
+
   it('shields absorb damage first; eliminations drop loot and award kills', () => {
     const { m, players } = playingMatch('solo', [[1], [2]]);
     const [a] = players[0];

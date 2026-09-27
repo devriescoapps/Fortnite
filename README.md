@@ -14,7 +14,7 @@ sound is synthesized with WebAudio. There are no external art or audio assets.
 | **Client** | TypeScript + Three.js, HTML/CSS UI, WebAudio synthesis, keyboard/mouse, touch and gamepad |
 | **Server** | Node.js + `ws`, authoritative 30 Hz simulation, binary snapshots, bots |
 | **Shared** | Deterministic simulation code used by both sides (movement, weapons, building, collision, map) |
-| **Tests** | 30 Vitest tests (unit, full-match simulations, networked integration) + Playwright browser e2e |
+| **Tests** | 31 Vitest tests (unit, full-match simulations, networked integration) + Playwright browser e2e |
 
 ## Quick start
 
@@ -87,7 +87,8 @@ glider → loot → fight → Surge phases shrink the map → last team standing
 - **Combat**: ARs, burst rifle, SMGs, pump & auto shotguns, bolt sniper & DMR, pistols,
   revolver, rocket launcher, grenades, smoke, melee bat; rarity tiers (Common → Legendary)
   scale damage/reload/spread; hip-fire bloom vs aim-down-sights, recoil, headshots, damage
-  falloff, shields, tracers, hit markers, damage numbers, knock-downs.
+  falloff, shields, tracers, hit markers, damage numbers, knock-downs. Sniper rounds are
+  ballistic (travel time and bullet drop) with lag compensation along the shooter's timeline.
 - **Loot**: floor loot, caches (with hum audio + glow), ammo crates, supply drops by balloon,
   rare-loot locations (Undervault vault, city spire roof, lighthouse, summit).
 - **Movement**: sprint, crouch, slide, jump, mantle, fall damage, skydive with dive control,
@@ -99,7 +100,7 @@ glider → loot → fight → Surge phases shrink the map → last team standing
   backpacks, gliders, trails, emotes). Cosmetics never affect hitboxes or stats.
 - **Multiplayer**: server-authoritative everything, client prediction + reconciliation (also for
   the vehicle you drive),
-  interpolation, lag-compensated hitscan, interest management, binary snapshots,
+  interpolation, lag-compensated hitscan and bullets, interest management, binary snapshots,
   reconnect, spectating, parties, bots that use the exact same input pipeline as humans.
 - **Platforms**: desktop (keyboard/mouse, gamepad), mobile (touch controls, auto low quality),
   quality presets (shadows, draw distance, pixel ratio).
@@ -130,13 +131,14 @@ docs/         design documents
 
 ```bash
 npm run typecheck
-npm test                      # 30 tests: sim, systems, full bot matches, networked play
+npm test                      # 31 tests: sim, systems, full bot matches, networked play
 DEV_COMMANDS=1 npm start &    # then, in another shell:
 QUALITY=low npm run e2e -- http://localhost:8080 screenshots
 ```
 
 The e2e script drives the real game in headless Chromium: menu → locker → lobby → build →
-transport → jump → skydive/glide → land → loot a cache → harvest → fight → drive a Rover →
+transport → jump → skydive/glide → land → loot a cache → harvest → fight → fire a ballistic
+DMR → drive a Rover →
 map → inventory → results/spectate → back to lobby with XP applied, saving screenshots of each
 step. Options: `MODE=duos|squads`, `FORCE_ELIM=1` (exercise results/spectating), `QUALITY=low|medium|high`.
 
@@ -151,8 +153,7 @@ step. Options: `MODE=duos|squads`, `FORCE_ELIM=1` (exercise results/spectating),
 ## Status and honest limitations
 
 This is a playable, tested prototype, not a shipped product. Notable gaps (tracked in
-[docs/PHASES.md](docs/PHASES.md)): sniper shots are hitscan rather than ballistic; the
-underground bunker has no special lighting pass; bots navigate with local avoidance rather than
+[docs/PHASES.md](docs/PHASES.md)): the underground bunker has no special lighting pass; bots navigate with local avoidance rather than
 a navmesh; persistence is a JSON file (swap for a database for real deployments); a single
 server process hosts all matches (no horizontal scaling/region routing); there is no
 skill-based matchmaking.

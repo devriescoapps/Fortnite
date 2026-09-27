@@ -6,12 +6,12 @@ import { MATERIALS, Piece, PieceType } from '../../shared/build';
 import { ROOF_PEAK } from '../../shared/collision';
 import { ITEM_BY_CODE, RARITIES } from '../../shared/items';
 import { MapData, PROP_TYPES, PropInst } from '../../shared/mapdata';
-import type { ContainerInfo, GroundItemInfo, VehSnap } from '../../shared/protocol';
+import type { ContainerInfo, GroundItemInfo, ProjSnap, VehSnap } from '../../shared/protocol';
 import type { Quality } from '../settings';
 import {
   GLOW_PROPS, ammoBoxGeometry, balloonGeometry, cachedItemGeometry, chestGeometry, propGeometry, roverModel, skywhaleModel, supplyGeometry,
 } from './models';
-import { box, build, materialTexture, radialTexture } from './util';
+import { box, build, cone, cyl, materialTexture, radialTexture, sphere } from './util';
 
 const tmpM = new THREE.Matrix4();
 const tmpQ = new THREE.Quaternion();
@@ -656,5 +656,130 @@ export class VehicleRenderer {
     this.bus.group.position.set(p.x, p.y + 6, p.z);
     this.bus.group.rotation.set(0, p.yaw, 0);
     for (const pr of this.bus.props) pr.rotation.z += dt * 20;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Projectiles in flight (rockets, grenades, smoke canisters, sniper bullets)
+// ---------------------------------------------------------------------------
+
+interface ProjView {
+  mesh: THREE.Object3D;
+  kind: number;
+  prev: THREE.Vector3;
+  cur: THREE.Vector3;
+  t0: number;
+  t1: number;
+  pos: THREE.Vector3;
+}
+
+interface LocalBullet {
+  mesh: THREE.Object3D;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  gravity: number;
+  range: number;
+}
+
+export class ProjectileRenderer {
+  views = new Map<number, ProjView>();
+  private locals: LocalBullet[] = [];
+  /** World ray test used to stop predicted bullets; returns hit distance or null. */
+  raycast: (o: THREE.Vector3, d: THREE.Vector3, max: number) => number | null = () => null;
+  onImpact: (p: THREE.Vector3) => void = () => {};
+  private geos: THREE.BufferGeometry[];
+  private mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  private glow = new THREE.MeshBasicMaterial({ color: 0xfff2c0 });
+  onTrail: (kind: number, p: THREE.Vector3) => void = () => {};
+
+  constructor(private scene: THREE.Scene) {
+    this.geos = [
+      build([
+        { g: cyl(0.09, 0.09, 0.7, 8), color: 0x556b2f, rot: [Math.PI / 2, 0, 0] },
+        { g: cone(0.09, 0.25, 8), color: 0xff5a36, pos: [0, 0, -0.47], rot: [-Math.PI / 2, 0, 0] },
+      ]),
+      build([{ g: sphere(0.12, 8, 6), color: 0x4caf50 }]),
+      build([{ g: cyl(0.07, 0.07, 0.22, 8), color: 0x9c6bff }]),
+      build([{ g: box(0.05, 0.05, 1.6), color: 0xffffff }]),
+    ];
+  }
+
+  sync(list: ProjSnap[], t: number) {
+    const seen = new Set<number>();
+    for (const p of list) {
+      seen.add(p.id);
+      let v = this.views.get(p.id);
+      if (!v) {
+        const mesh = new THREE.Mesh(this.geos[p.kind] ?? this.geos[1], p.kind === 3 ? this.glow : this.mat);
+        this.scene.add(mesh);
+        const at = new THREE.Vector3(p.x, p.y, p.z);
+        v = { mesh, kind: p.kind, prev: at.clone(), cur: at.clone(), t0: t, t1: t, pos: at.clone() };
+        this.views.set(p.id, v);
+      } else {
+        v.prev.copy(v.cur);
+        v.t0 = v.t1;
+      }
+      v.cur.set(p.x, p.y, p.z);
+      v.t1 = t;
+    }
+    for (const [id, v] of this.views) if (!seen.has(id)) {
+      this.scene.remove(v.mesh);
+      this.views.delete(id);
+    }
+  }
+
+  clear() {
+    for (const v of this.views.values()) this.scene.remove(v.mesh);
+    this.views.clear();
+    for (const b of this.locals) this.scene.remove(b.mesh);
+    this.locals.length = 0;
+  }
+
+  /** Visual-only bullet for the local shooter (the server simulates the real one). */
+  spawnLocal(pos: THREE.Vector3, vel: THREE.Vector3, gravity: number, range: number) {
+    const mesh = new THREE.Mesh(this.geos[3], this.glow);
+    mesh.position.copy(pos);
+    this.scene.add(mesh);
+    this.locals.push({ mesh, pos: pos.clone(), vel: vel.clone(), gravity, range });
+  }
+
+  private stepLocals(dt: number) {
+    const dir = new THREE.Vector3();
+    for (let i = this.locals.length - 1; i >= 0; i--) {
+      const b = this.locals[i];
+      b.vel.y -= b.gravity * dt;
+      const len = b.vel.length() * dt;
+      b.range -= len;
+      dir.copy(b.vel).normalize();
+      const hit = this.raycast(b.pos, dir, len);
+      if (hit !== null || b.range <= 0 || b.pos.y < -30) {
+        if (hit !== null) {
+          b.pos.addScaledVector(dir, hit);
+          this.onImpact(b.pos);
+        }
+        this.scene.remove(b.mesh);
+        this.locals.splice(i, 1);
+        continue;
+      }
+      b.pos.addScaledVector(dir, len);
+      b.mesh.position.copy(b.pos);
+      b.mesh.lookAt(b.pos.clone().sub(dir));
+      this.onTrail(3, b.pos);
+    }
+  }
+
+  update(dt: number, renderT: number) {
+    this.stepLocals(dt);
+    for (const v of this.views.values()) {
+      const span = Math.max(0.001, v.t1 - v.t0);
+      const k = Math.min(1.6, Math.max(0, (renderT - v.t0) / span));
+      const last = v.pos.clone();
+      v.pos.lerpVectors(v.prev, v.cur, k);
+      v.mesh.position.copy(v.pos);
+      const d = v.pos.clone().sub(last);
+      if (d.lengthSq() > 1e-6) v.mesh.lookAt(v.pos.clone().sub(d));
+      if (v.kind === 1 || v.kind === 2) v.mesh.rotation.x += dt * 12;
+      this.onTrail(v.kind, v.pos);
+    }
   }
 }
