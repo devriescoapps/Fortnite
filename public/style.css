@@ -257,3 +257,31 @@ input { font-family: var(--font); }
   .hud-tl { width: 160px; }
   .inv { grid-template-columns: repeat(3, 100px); }
 }
+
+/* ---------- touch layout (phones/tablets) ---------- */
+body.touch #minimap { width: 112px; height: 112px; border-width: 2px; }
+body.touch .hud-tr { top: 8px; right: 8px; gap: 4px; }
+body.touch .hud-stats .pill { font-size: 12px; padding: 3px 8px; }
+body.touch .storm-info { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); min-width: 0; font-size: 12px; padding: 4px 10px; text-align: center; }
+body.touch .hud-bl { top: 8px; left: 56px; bottom: auto; width: 180px; transform: scale(.8); transform-origin: top left; }
+body.touch .hud-tl { top: 96px; left: 8px; width: 150px; transform: scale(.85); transform-origin: top left; }
+body.touch .hud-bc { bottom: 6px; transform: translateX(-50%) scale(.62); transform-origin: bottom center; }
+body.touch .hud-br { right: 50%; bottom: 58px; transform: translateX(50%) scale(.55); transform-origin: bottom center; text-align: center; }
+body.touch .hud-br .build-bar { justify-content: center; }
+body.touch .feed { right: 128px; top: 8px; font-size: 11px; }
+body.touch .prompt { top: 58%; font-size: 13px; }
+body.touch #touch .t-menu { left: 8px; top: 8px; margin-left: 0; width: 40px; height: 40px; }
+body.touch #touch .t-map { right: 128px; top: 8px; width: 44px; height: 44px; }
+body.touch #touch .t-inv { right: 178px; top: 8px; width: 44px; height: 44px; }
+body.touch #touch .t-fire { right: 18px; bottom: 96px; width: 80px; height: 80px; }
+body.touch #touch .t-ads { right: 108px; bottom: 150px; width: 56px; height: 56px; }
+body.touch #touch .t-jump { right: 108px; bottom: 62px; width: 66px; height: 66px; }
+body.touch #touch .t-reload { right: 176px; bottom: 150px; width: 48px; height: 48px; }
+body.touch #touch .t-use { right: 186px; bottom: 80px; width: 56px; height: 56px; }
+body.touch #touch .t-crouch { right: 186px; bottom: 16px; width: 56px; height: 56px; }
+body.touch #touch .t-build { right: 22px; bottom: 16px; width: 64px; height: 64px; }
+body.touch #touch .t-sprint { right: 256px; bottom: 16px; width: 50px; height: 50px; }
+body.touch #touch .t-build-row { top: auto; bottom: 190px; right: 18px; flex-direction: row; }
+@media (orientation: portrait) {
+  body.touch .hud-bc { transform: translateX(-50%) scale(.5); }
+}

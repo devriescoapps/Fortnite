@@ -209,6 +209,7 @@ export class Game {
     if (IS_MOBILE || 'ontouchstart' in window) {
       this.touch = new TouchControls(this.input, document.getElementById('app')!, () => this.settings.sensitivity);
       this.touch.setVisible(false);
+      document.body.classList.add('touch');
     }
     document.getElementById('boot')!.remove();
     this.net.onMessage = (m) => this.onMessage(m);
@@ -1473,6 +1474,7 @@ export class Game {
   // ------------------------------------------------------------------ building
   private updateBuild(m: MatchState) {
     const s = m.sim;
+    this.touch?.setBuildMode(m.buildMode);
     const canBuild = m.buildMode && !m.eliminated && s.mode === Mode.Walk && m.phase !== 'bus' && m.phase !== 'ended';
     if (!canBuild) {
       this.pieces.setGhost(null, false);

@@ -188,8 +188,11 @@ export class Match {
     return -1;
   }
 
-  /** Add a party of humans to the same team. Bots are removed to make room. */
-  addParty(reqs: JoinRequest[]): ServerPlayer[] {
+  /**
+   * Add a party of humans to the same team. Bots are removed to make room. With `fill` (default)
+   * a party may be merged into another human team that has open seats, like squad-fill queues.
+   */
+  addParty(reqs: JoinRequest[], fill = true): ServerPlayer[] {
     const n = reqs.length;
     let team = -1;
     // replace a bot-only team, else find room
@@ -200,7 +203,7 @@ export class Match {
         break;
       }
     }
-    if (team < 0) team = this.teamWithRoom(n, true);
+    if (team < 0 && fill) team = this.teamWithRoom(n, true);
     if (team < 0) team = this.newTeam();
     const out: ServerPlayer[] = [];
     for (const r of reqs) {

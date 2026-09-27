@@ -627,8 +627,9 @@ export class VehicleRenderer {
       if (dy < -Math.PI) dy += Math.PI * 2;
       v.group.rotation.set(0, 0, 0);
       v.group.rotateY(a.yaw + dy * k);
-      v.group.rotateX(-(a.pitch + (b.pitch - a.pitch) * k));
-      v.group.rotateZ(-(a.roll + (b.roll - a.roll) * k));
+      // positive pitch = nose up (front is -Z), positive roll = right side up
+      v.group.rotateX(a.pitch + (b.pitch - a.pitch) * k);
+      v.group.rotateZ(a.roll + (b.roll - a.roll) * k);
       v.spin += b.speed * dt / 0.48;
       for (const w of v.wheels) w.rotation.x = -v.spin;
     }

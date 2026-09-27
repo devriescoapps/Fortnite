@@ -96,4 +96,54 @@ describe('network play', () => {
     clearInterval(idle2);
     c.ws.close();
   }, 60000);
+
+  it('parties queue together and land on the same team', async () => {
+    const a = new Client();
+    const b = new Client();
+    await Promise.all([a.open(), b.open()]);
+    a.send({ t: 'hello', name: 'Leader' });
+    b.send({ t: 'hello', name: 'Buddy' });
+    await a.waitFor(() => a.msgs.some((m) => m.t === 'welcome'));
+    await b.waitFor(() => b.msgs.some((m) => m.t === 'welcome'));
+    a.send({ t: 'party.create' });
+    await a.waitFor(() => a.msgs.some((m) => m.t === 'party' && m.party));
+    const code = a.msgs.find((m) => m.t === 'party' && m.party).party.code;
+    b.send({ t: 'party.join', code });
+    await a.waitFor(() => a.msgs.some((m) => m.t === 'party' && m.party?.members.length === 2));
+    b.send({ t: 'queue', mode: 'duos' }); // only the leader may queue
+    await b.waitFor(() => b.msgs.some((m) => m.t === 'error'));
+    a.send({ t: 'queue', mode: 'duos' });
+    await a.waitFor(() => a.msgs.some((m) => m.t === 'match'));
+    await b.waitFor(() => b.msgs.some((m) => m.t === 'match'));
+    const ma = a.msgs.find((m) => m.t === 'match');
+    const mb = b.msgs.find((m) => m.t === 'match');
+    expect(ma.matchId).toBe(mb.matchId);
+    expect(ma.team).toBe(mb.team);
+    a.ws.close();
+    b.ws.close();
+  }, 60000);
+
+  it('a disconnected player can reconnect to their match with the same token', async () => {
+    const c = new Client();
+    await c.open();
+    c.send({ t: 'hello', name: 'Flaky' });
+    await c.waitFor(() => c.msgs.some((m) => m.t === 'welcome'));
+    const token = c.msgs.find((m) => m.t === 'welcome').token;
+    c.send({ t: 'queue', mode: 'solo' });
+    await c.waitFor(() => c.msgs.some((m) => m.t === 'match'));
+    const first = c.msgs.find((m) => m.t === 'match');
+    const idle = setInterval(() => c.input(0), 16);
+    await c.waitFor(() => c.snap?.self?.mode === Mode.Bus, 15000); // past the lobby
+    clearInterval(idle);
+    c.ws.close();
+    await new Promise((r) => setTimeout(r, 500));
+    const c2 = new Client();
+    await c2.open();
+    c2.send({ t: 'hello', token });
+    await c2.waitFor(() => c2.msgs.some((m) => m.t === 'match'));
+    const again = c2.msgs.find((m) => m.t === 'match');
+    expect(again.matchId).toBe(first.matchId);
+    expect(again.you).toBe(first.you);
+    c2.ws.close();
+  }, 60000);
 });
