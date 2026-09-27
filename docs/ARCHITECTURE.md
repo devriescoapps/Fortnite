@@ -59,7 +59,8 @@ Clients never send positions, hits or inventory results. They send:
    Only the newest snapshot is kept; once per frame the client resets to it and replays all
    commands newer than `ack`.
 3. Any residual difference is hidden with an exponentially decaying visual offset (snap if > 3 m).
-4. Transport, vehicle and dead states are server-driven (not predicted).
+4. The driven vehicle is predicted the same way (server steps it per driver input and sends its
+   full state to the driver). Transport, passenger and dead states are server-driven.
 
 ### Remote entities
 Rendered `INTERP_DELAY` = 100 ms in the past, interpolating between buffered snapshots

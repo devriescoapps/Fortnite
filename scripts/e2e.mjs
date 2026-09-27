@@ -57,6 +57,9 @@ await page.waitForTimeout(300);
 await shot('02-locker');
 await page.click('.tab[data-tab=play]');
 
+const mode = process.env.MODE || 'solo';
+await page.click(`[data-mode=${mode}]`);
+await page.waitForTimeout(200);
 await page.click('#play');
 await page.waitForFunction(() => window.game?.state === 'match', null, { timeout: 30000 });
 await page.waitForTimeout(1500);
@@ -231,9 +234,32 @@ await page.waitForTimeout(20000);
 await page.evaluate(() => { clearInterval(window.__fight); window.game.input.lmb = false; window.game.input.keys.clear(); });
 console.log('after fight', await state());
 await shot('10-fight');
+// Vehicles: hop next to a Rover, get in, drive (client-predicted), get out
+const drove = await page.evaluate(async () => {
+  const g = window.game, m = g.m;
+  if (!m || m.eliminated || m.vehicles.size === 0) return null;
+  const s = m.sim;
+  let best = null, bd = 1e9;
+  for (const [id, v] of m.vehicles) { const d = Math.hypot(v.x - s.x, v.z - s.z); if (d < bd) { bd = d; best = { id, ...v }; } }
+  g.net.send({ t: 'dev', cmd: 'teleport', x: best.x + 2.2, z: best.z });
+  await new Promise((r) => setTimeout(r, 1500));
+  g.net.send({ t: 'act', a: { a: 'interact', kind: 'vehicle', id: best.id } });
+  await new Promise((r) => setTimeout(r, 1500));
+  const start = { x: m.sim.x, z: m.sim.z, mode: m.sim.mode, predicted: !!m.drive };
+  g.input.keys.add('KeyW');
+  await new Promise((r) => setTimeout(r, 3000));
+  g.input.keys.delete('KeyW');
+  const end = { x: m.sim.x, z: m.sim.z, mode: m.sim.mode, predicted: !!m.drive };
+  return { start, end, moved: Math.hypot(end.x - start.x, end.z - start.z) };
+});
+console.log('vehicle', JSON.stringify(drove));
+await shot('10-vehicle');
+await page.keyboard.press('KeyF');
+await page.waitForTimeout(800);
 await page.keyboard.press('KeyM');
 await page.waitForTimeout(400);
 await shot('10-map');
+console.log('team rows', await page.evaluate(() => document.querySelectorAll('.team-row').length), 'tags', await page.evaluate(() => document.querySelectorAll('#tags .tag').length));
 await page.keyboard.press('KeyM');
 await page.keyboard.press('Tab');
 await page.waitForTimeout(300);
@@ -241,6 +267,11 @@ await shot('11-inventory');
 await page.keyboard.press('Tab');
 console.log('final', await state());
 
+// Force an elimination (dev command) to exercise results -> spectate -> lobby
+if (process.env.FORCE_ELIM) {
+  await page.evaluate(() => window.game.net.send({ t: 'dev', cmd: 'eliminate' }));
+  await page.waitForTimeout(1500);
+}
 // If eliminated: results -> spectate -> back to lobby with XP applied
 const died = await page.evaluate(() => window.game.m?.eliminated);
 if (died) {

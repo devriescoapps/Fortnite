@@ -739,7 +739,8 @@ export function buildWorld(terrain: Terrain, map: MapData) {
       maxHp: md.maxHp,
       owner: 0,
       team: -1,
-      anchored: true,
+      // map buildings obey structural integrity too; only indestructible bunker plates are anchored
+      anchored: md.indestructible === true,
       grounded: isPieceGrounded(mp, terrain),
       buildStart: -100,
       buildTime: 0,

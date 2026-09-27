@@ -9,11 +9,12 @@ import { AMMO_TYPES, ITEM_BY_CODE, RARITIES, ammoIndex, stackName } from '../sha
 import { forwardFromYawPitch, rightFromYaw, wrapAngle, fmtTime } from '../shared/math';
 import { MapData, PROP_TYPES, buildWorld, generateMap } from '../shared/mapdata';
 import { nearestPoi } from '../shared/pois';
-import { EF_ADS, EF_BUILDING, EF_CROUCH, EF_GROUNDED, EF_RELOAD, EF_SLIDE, EF_SPRINT, EF_USING, EntSnap, GroundItemInfo, MatchInit, MatchPhase, PieceInfo, PlayerInfo, ResultsMsg, Snapshot, quantizeInput } from '../shared/protocol';
+import { DriveSnap, EF_ADS, EF_BUILDING, EF_CROUCH, EF_GROUNDED, EF_RELOAD, EF_SLIDE, EF_SPRINT, EF_USING, EntSnap, GroundItemInfo, MatchInit, MatchPhase, PieceInfo, PlayerInfo, ResultsMsg, Snapshot, quantizeInput } from '../shared/protocol';
 import { DEFAULT_LOADOUT, EMOTE_IDS } from '../shared/progression';
 import { BTN, InputCmd, Mode, SLOT_KEEP, SimEvent, SimState, SHOULDER_RIGHT, SHOULDER_UP, copySim, createSim, eyeHeight, spreadDegrees, stepSim } from '../shared/sim';
 import { StormState, distanceToSafety, initialStorm, isInStorm, stormCircleAt } from '../shared/storm';
 import { NO_GROUND, Terrain, biomeAt } from '../shared/terrain';
+import { VEHICLES, VehicleState, quantizeVehicle, seatWorldPos, stepVehicle } from '../shared/vehicle';
 import { AudioEngine } from './audio';
 import { Input, TouchControls } from './input';
 import { Net } from './net';
@@ -92,7 +93,9 @@ interface MatchState {
   lastHurt: number;
   prevMode: Mode;
   vehicles: Map<number, { x: number; y: number; z: number; speed: number }>;
-  selfVehicle: { id: number; seat: number };
+  /** Predicted vehicle while driving (null when walking or riding as a passenger). */
+  drive: VehicleState | null;
+  wasPredicted: boolean;
 }
 
 export class Game {
@@ -431,7 +434,7 @@ export class Game {
       spectating: init.spectating ?? 0, eliminated: init.spectating !== undefined, results: null, resultsShown: false,
       buildMode: false, piece: 'wall', mat: 0, lastBuildAt: 0, predicted: new Map(), slotReq: SLOT_KEEP, sprintOn: false, crouchOn: false,
       channel: null, chips: [], pings: [], pads, itemInfo, pickupCd: new Map(), target: null, ended: false, winnerTeam: -1,
-      recoil: 0, shake: 0, stepT: 0, model, lastHurt: -10, prevMode: Mode.Walk, vehicles: new Map(), selfVehicle: { id: 0, seat: 0 },
+      recoil: 0, shake: 0, stepT: 0, model, lastHurt: -10, prevMode: Mode.Walk, vehicles: new Map(), drive: null, wasPredicted: true,
     };
     this.view.yaw = 0; // face north, toward the island
     this.view.pitch = -0.05;
@@ -810,7 +813,7 @@ export class Game {
     m.lastSnap = local;
 
     // --- self reconciliation: keep only the newest authoritative state; replay once per frame ---
-    if (s.self && !m.eliminated) this.pendingSelf = { self: s.self, ack: s.ack };
+    if (s.self && !m.eliminated) this.pendingSelf = { self: s.self, ack: s.ack, drive: s.drive ?? null };
     m.busPos = s.bus;
 
     // --- remote entities ---
@@ -849,27 +852,41 @@ export class Game {
     for (const v of s.vehicles) m.vehicles.set(v.id, { x: v.x, y: v.y, z: v.z, speed: v.speed });
   }
 
-  private pendingSelf: { self: SimState; ack: number } | null = null;
+  private pendingSelf: { self: SimState; ack: number; drive: DriveSnap | null } | null = null;
 
-  /** Reset the predicted player to the latest server state and replay unacknowledged inputs. */
+  /** Reset the predicted player (and driven vehicle) to the latest server state and replay unacknowledged inputs. */
   private reconcile(m: MatchState) {
     const ps = this.pendingSelf;
     if (!ps) return;
     this.pendingSelf = null;
     m.pending = m.pending.filter((c) => c.seq > ps.ack);
     const oldX = m.sim.x, oldY = m.sim.y, oldZ = m.sim.z;
-    const wasMode = m.sim.mode;
     copySim(m.sim, ps.self);
-    if (!serverDriven(m.sim.mode)) {
-      const ctx = { world: this.world, playerId: m.you, canAttack: m.phase === 'bus' || m.phase === 'play', pads: m.pads };
-      for (const c of m.pending) {
-        this.evScratch.length = 0;
-        stepSim(m.sim, c, INPUT_DT, ctx, this.evScratch);
+    const d = ps.drive;
+    if (m.sim.mode === Mode.Vehicle && d && d.seat === 0 && d.st) {
+      const prevId = m.drive?.id;
+      const v: VehicleState = m.drive && prevId === d.id ? m.drive : { id: d.id, type: 0, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0, speed: 0, vy: 0, hp: VEHICLES[0].hp, seats: [m.you, 0, 0, 0], boost: 0 };
+      Object.assign(v, d.st);
+      m.drive = v;
+      for (const c of m.pending) this.driveStep(m, c);
+      const sp = seatWorldPos(v, 0);
+      m.sim.x = sp.x;
+      m.sim.y = sp.y;
+      m.sim.z = sp.z;
+    } else {
+      m.drive = null;
+      if (!serverDriven(m.sim.mode)) {
+        const ctx = { world: this.world, playerId: m.you, canAttack: m.phase === 'bus' || m.phase === 'play', pads: m.pads };
+        for (const c of m.pending) {
+          this.evScratch.length = 0;
+          stepSim(m.sim, c, INPUT_DT, ctx, this.evScratch);
+        }
       }
     }
+    const predicted = !serverDriven(m.sim.mode) || !!m.drive;
     const dx = oldX - m.sim.x, dy = oldY - m.sim.y, dz = oldZ - m.sim.z;
     const err = Math.hypot(dx, dy, dz);
-    if (err > 3 || serverDriven(m.sim.mode) || serverDriven(wasMode)) {
+    if (err > 3 || !predicted || !m.wasPredicted) {
       m.offset.set(0, 0, 0);
       m.prev.set(m.sim.x, m.sim.y, m.sim.z);
     } else if (err > 0.001) {
@@ -880,6 +897,14 @@ export class Game {
       m.prev.y -= dy;
       m.prev.z -= dz;
     }
+    m.wasPredicted = predicted;
+  }
+
+  /** Advance the predicted driven vehicle by one input (same code the server runs). */
+  private driveStep(m: MatchState, c: InputCmd) {
+    const v = m.drive!;
+    stepVehicle(v, { mx: c.mx, mz: c.mz, handbrake: (c.buttons & BTN.JUMP) !== 0 }, INPUT_DT, this.world, []);
+    quantizeVehicle(v);
   }
 
   // ------------------------------------------------------------------ per-frame
@@ -924,6 +949,7 @@ export class Game {
       this.updateHud(m, dt);
       this.updateAudio(m, dt);
       this.vehicles.setBus(m.phase === 'bus' && m.busPos ? m.busPos : null, dt);
+      this.vehicles.predicted = m.drive;
       this.vehicles.update(dt, this.serverNow() - INTERP_DELAY);
     } else {
       this.input.consumeActions();
@@ -1151,6 +1177,13 @@ export class Game {
     if (m.pending.length > 240) m.pending.shift();
     this.outgoing.push(cmd);
     m.prev.set(s.x, s.y, s.z);
+    if (s.mode === Mode.Vehicle && m.drive) {
+      this.driveStep(m, cmd);
+      const sp = seatWorldPos(m.drive, 0);
+      s.x = sp.x;
+      s.y = sp.y;
+      s.z = sp.z;
+    }
     if (serverDriven(s.mode)) {
       s.yaw = cmd.yaw;
       s.pitch = cmd.pitch;
@@ -1574,6 +1607,8 @@ export class Game {
     let d = dist;
     const hit = this.world.raycast(pivot.x, pivot.y, pivot.z, -f.x, -f.y, -f.z, dist + 0.3);
     if (hit) d = Math.max(0.3, hit.t - 0.3);
+    // when a wall pushes the camera into the player's head, hide the local model instead of clipping
+    if (d < 1.1 && !m.eliminated && !(s.ads && w && w.cls === 'sniper')) model.root.visible = false;
     const target = new THREE.Vector3(pivot.x - f.x * d, pivot.y - f.y * d, pivot.z - f.z * d);
     // keep camera above water/terrain
     const th = this.terrain.heightAt(target.x, target.z);

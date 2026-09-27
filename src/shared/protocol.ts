@@ -116,11 +116,19 @@ export interface ProjSnap {
   z: number;
 }
 
+/** The vehicle the local player occupies; full-precision state only for the driver. */
+export interface DriveSnap {
+  id: number;
+  seat: number;
+  st: { x: number; y: number; z: number; yaw: number; pitch: number; roll: number; speed: number; vy: number } | null;
+}
+
 export interface Snapshot {
   tick: number;
   time: number;
   ack: number;
   self: SimState | null;
+  drive?: DriveSnap | null;
   ents: EntSnap[];
   vehicles: VehSnap[];
   projs: ProjSnap[];
@@ -224,8 +232,15 @@ export function encodeSnapshot(w: ByteWriter, snap: Snapshot) {
   w.u32w(snap.tick);
   w.f32w(snap.time);
   w.u32w(snap.ack);
-  w.u8w((snap.self ? 1 : 0) | (snap.bus ? 2 : 0));
+  w.u8w((snap.self ? 1 : 0) | (snap.bus ? 2 : 0) | (snap.drive ? 4 : 0));
   if (snap.self) writeSelf(w, snap.self);
+  if (snap.drive) {
+    const d = snap.drive;
+    w.u16w(d.id);
+    w.u8w(d.seat);
+    w.u8w(d.st ? 1 : 0);
+    if (d.st) for (const k of [d.st.x, d.st.y, d.st.z, d.st.yaw, d.st.pitch, d.st.roll, d.st.speed, d.st.vy]) w.f32w(k);
+  }
   if (snap.bus) {
     w.f32w(snap.bus.x); w.f32w(snap.bus.y); w.f32w(snap.bus.z); w.u16w(qYaw(snap.bus.yaw));
   }
@@ -270,6 +285,13 @@ export function decodeSnapshot(r: ByteReader): Snapshot {
   const ack = r.u32();
   const flags = r.u8();
   const self = flags & 1 ? readSelf(r) : null;
+  let drive: DriveSnap | null = null;
+  if (flags & 4) {
+    const id = r.u16();
+    const seat = r.u8();
+    const has = r.u8();
+    drive = { id, seat, st: has ? { x: r.f32(), y: r.f32(), z: r.f32(), yaw: r.f32(), pitch: r.f32(), roll: r.f32(), speed: r.f32(), vy: r.f32() } : null };
+  }
   let bus: Snapshot['bus'] = null;
   if (flags & 2) bus = { x: r.f32(), y: r.f32(), z: r.f32(), yaw: dqYaw(r.u16()) };
   const ne = r.u16();
@@ -304,7 +326,7 @@ export function decodeSnapshot(r: ByteReader): Snapshot {
   const np = r.u16();
   const projs: ProjSnap[] = [];
   for (let k = 0; k < np; k++) projs.push({ id: r.u16(), kind: r.u8(), x: r.f32(), y: r.f32(), z: r.f32() });
-  return { tick, time, ack, self, ents, vehicles, projs, bus };
+  return { tick, time, ack, self, drive, ents, vehicles, projs, bus };
 }
 
 // ---------------------------------------------------------------------------

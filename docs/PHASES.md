@@ -236,7 +236,9 @@ looking up/down selects above/below; standing on an up-ramp targets the next lev
 rushing). Validation: slot free, height limits, material ≥ 10, rate ≤ 10/s, range ≤ 10.6 m,
 supported (touches terrain or shares a grid edge with an existing piece). Pieces start at 10 %
 HP and build up over the material's build time. When pieces are destroyed, a BFS from their
-neighbours removes every component that lost its path to the ground (map pieces are anchored).
+neighbours removes every component that lost its path to the ground — for player builds and map
+buildings alike (only the indestructible bunker plates are anchored); loot resting on collapsed
+floors falls to whatever is below.
 Wall edits cycle solid → door → window. Pop Fort builds an instant alloy box.
 
 **Implementation steps.** ✅ grid, colliders, edge graph · ✅ targeting + ghost · ✅ validation ·
@@ -247,7 +249,8 @@ tuning with ping-aware prediction windows.
 **Testing requirements.** Support rules and collapse cascade; rejection reasons (mats, rate,
 range, occupied); build-up HP curve; target selection for common facings; walking up ramps.
 Covered by `tests/sim.test.ts` (support/collapse, targeting, ramp climb) and
-`tests/systems.test.ts` (server validation reasons, collapse via damage, build-up).
+`tests/systems.test.ts` (server validation reasons, collapse via damage, build-up, map building
+collapse with loot settling).
 
 ---
 
@@ -351,7 +354,10 @@ VehicleState { id, type, x,y,z, yaw, pitch, roll, speed, vy, hp, seats: playerId
 ```
 
 **Networking considerations.** Vehicles are replicated in snapshots (≤ 450 m) and
-interpolated; driving is server-authoritative without client prediction in this prototype.
+interpolated for everyone except the driver. The driven vehicle is **predicted**: the server
+steps it once per driver input (not per tick), quantizes it to f32 and sends its full state in
+the driver's snapshot (`DriveSnap`); the client resets to it and replays unacknowledged inputs,
+exactly like player movement. Empty vehicles coast/settle on the server tick.
 
 **Core gameplay logic.** Enter/seat/exit actions; driver input drives the Rover; ramming
 structures at speed damages them; running over enemies deals speed-scaled damage and
@@ -360,12 +366,13 @@ the summit and city roof, and deployable Spring Pads, launch players into skydiv
 redeploy.
 
 **Implementation steps.** ✅ Rover physics · ✅ seats, enter/exit · ✅ collisions, run-over,
-damage, explosion · ✅ engine audio · ✅ launch/Spring Pads · ⏭ client-side vehicle prediction
-(reconcile the driven vehicle like the player) · ⏭ boats for the harbor · ⏭ ziplines.
+damage, explosion · ✅ engine audio · ✅ launch/Spring Pads · ✅ client-side prediction of the
+driven vehicle · ⏭ boats for the harbor · ⏭ ziplines.
 
 **Testing requirements.** Enter → drive → exit; speed limits; collision damage; passenger
 attachment; launch pad trajectory.
-Covered by `tests/systems.test.ts` (enter/drive/exit). ⏭ Add ramming and explosion tests.
+Covered by `tests/systems.test.ts` (enter/drive/exit, bit-identical vehicle replay) and the
+browser e2e (drive a Rover with prediction active). ⏭ Add ramming and explosion tests.
 
 ---
 

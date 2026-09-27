@@ -579,6 +579,8 @@ const ROVER_COLORS = [0xff5a5f, 0x2ec4b6, 0xffd23f, 0x3a86ff, 0x8338ec, 0xfb5607
 
 export class VehicleRenderer {
   views = new Map<number, VehView>();
+  /** Locally predicted vehicle (the one we drive) — rendered from prediction, not interpolation. */
+  predicted: { id: number; x: number; y: number; z: number; yaw: number; pitch: number; roll: number; speed: number } | null = null;
   bus: { group: THREE.Group; props: THREE.Object3D[] };
   constructor(private scene: THREE.Scene) {
     this.bus = skywhaleModel();
@@ -621,16 +623,24 @@ export class VehicleRenderer {
       const span = Math.max(0.001, v.t1 - v.t0);
       const k = Math.min(1.5, Math.max(0, (renderT - v.t0) / span));
       const a = v.prev, b = v.cur;
-      v.group.position.set(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.z + (b.z - a.z) * k);
-      let dy = b.yaw - a.yaw;
-      if (dy > Math.PI) dy -= Math.PI * 2;
-      if (dy < -Math.PI) dy += Math.PI * 2;
+      const pr = this.predicted && this.predicted.id === b.id ? this.predicted : null;
       v.group.rotation.set(0, 0, 0);
-      v.group.rotateY(a.yaw + dy * k);
-      // positive pitch = nose up (front is -Z), positive roll = right side up
-      v.group.rotateX(a.pitch + (b.pitch - a.pitch) * k);
-      v.group.rotateZ(a.roll + (b.roll - a.roll) * k);
-      v.spin += b.speed * dt / 0.48;
+      if (pr) {
+        v.group.position.set(pr.x, pr.y, pr.z);
+        v.group.rotateY(pr.yaw);
+        v.group.rotateX(pr.pitch);
+        v.group.rotateZ(pr.roll);
+      } else {
+        v.group.position.set(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.z + (b.z - a.z) * k);
+        let dy = b.yaw - a.yaw;
+        if (dy > Math.PI) dy -= Math.PI * 2;
+        if (dy < -Math.PI) dy += Math.PI * 2;
+        v.group.rotateY(a.yaw + dy * k);
+        // positive pitch = nose up (front is -Z), positive roll = right side up
+        v.group.rotateX(a.pitch + (b.pitch - a.pitch) * k);
+        v.group.rotateZ(a.roll + (b.roll - a.roll) * k);
+      }
+      v.spin += (pr ? pr.speed : b.speed) * dt / 0.48;
       for (const w of v.wheels) w.rotation.x = -v.spin;
     }
   }

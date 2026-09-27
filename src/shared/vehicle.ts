@@ -65,6 +65,14 @@ export function seatWorldPos(v: VehicleState, seat: number) {
   return { x: v.x + s.x * c + s.z * sn, y: v.y + s.y, z: v.z - s.x * sn + s.z * c };
 }
 
+/** Round to f32 so client replays of the driven vehicle match the server bit-for-bit. */
+export function quantizeVehicle(v: VehicleState) {
+  const f = Math.fround;
+  v.x = f(v.x); v.y = f(v.y); v.z = f(v.z);
+  v.yaw = f(v.yaw); v.pitch = f(v.pitch); v.roll = f(v.roll);
+  v.speed = f(v.speed); v.vy = f(v.vy);
+}
+
 export function stepVehicle(v: VehicleState, inp: VehicleInput | null, dt: number, world: CollisionWorld, hits: VehicleHit[]) {
   const def = VEHICLES[v.type];
   const mz = inp ? clamp(inp.mz, -1, 1) : 0;

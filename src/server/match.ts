@@ -19,14 +19,14 @@ import { rayAABB, raySphere } from '../shared/math';
 import { nearestPoi } from '../shared/pois';
 import {
   ContainerInfo, EF_ADS, EF_BUILDING, EF_CROUCH, EF_GROUNDED, EF_RELOAD, EF_SLIDE, EF_SPRINT, EF_USING, EntSnap, GroundItemInfo,
-  MatchInit, MatchPhase, PieceInfo, PlayerInfo, ProjSnap, VehSnap, encodeSnapshot, quantizeSim, Action,
+  MatchInit, MatchPhase, PieceInfo, PlayerInfo, ProjSnap, Snapshot, VehSnap, encodeSnapshot, quantizeSim, Action,
 } from '../shared/protocol';
 import { EMOTE_IDS } from '../shared/progression';
 import { RNG } from '../shared/rng';
 import { BTN, InputCmd, Mode, SimEvent, createSim, emptyInventory, eyeHeight, stepSim } from '../shared/sim';
 import { STORM_INITIAL_RADIUS, STORM_PHASES, StormState, initialStorm, stormCircleAt } from '../shared/storm';
 import { NO_GROUND, Terrain } from '../shared/terrain';
-import { VEHICLES, VehicleHit, VehicleInput, VehicleState, seatWorldPos, stepVehicle } from '../shared/vehicle';
+import { VEHICLES, VehicleHit, VehicleInput, VehicleState, quantizeVehicle, seatWorldPos, stepVehicle } from '../shared/vehicle';
 import { BotBrain, botName } from './bot';
 import type { ServerConfig } from './config';
 import { AMMO_DROP, rollAmmoBox, rollChestLoot, rollFloorLoot, rollSupplyDrop } from './loot';
@@ -118,7 +118,6 @@ export class Match {
   containers = new Map<number, Container>();
   private nextContainerId = 1;
   vehicles = new Map<number, VehicleState>();
-  private vehicleInputs = new Map<number, VehicleInput>();
   private projectiles = new Map<number, Projectile>();
   private nextProjId = 1;
   pads = new Map<number, Pad>();
@@ -328,6 +327,8 @@ export class Match {
       s.grounded = false;
       p.landed = true;
       quantizeSim(s);
+    } else if (cmd.cmd === 'eliminate') {
+      if (!p.eliminated) this.eliminate(p, null, 'void');
     } else if (cmd.cmd === 'give' && cmd.id && ITEM_BY_ID[cmd.id]) {
       const def = ITEM_BY_ID[cmd.id];
       if (def.ammoType) s.inv.ammo[AMMO_TYPES.indexOf(def.ammoType)] += 60;
@@ -490,7 +491,9 @@ export class Match {
       s.yaw = cmd.yaw;
       s.pitch = cmd.pitch;
       s.prevButtons = cmd.buttons;
-      if (p.seat === 0) this.vehicleInputs.set(p.vehicleId, { mx: cmd.mx, mz: cmd.mz, handbrake: (cmd.buttons & BTN.JUMP) !== 0 });
+      const v = this.vehicles.get(p.vehicleId);
+      // the driver's inputs step the vehicle at the input rate, exactly like client prediction does
+      if (v && p.seat === 0) this.driveVehicle(v, p, { mx: cmd.mx, mz: cmd.mz, handbrake: (cmd.buttons & BTN.JUMP) !== 0 }, INPUT_DT);
       return;
     }
     const ev: SimEvent[] = [];
@@ -872,27 +875,44 @@ export class Match {
 
   destroyPieces(ids: number[]) {
     const removed: number[] = [];
+    const centers: { x: number; y: number; z: number }[] = [];
+    const drop = (id: number) => {
+      const pc = this.grid.get(id);
+      if (!pc) return false;
+      centers.push(pieceCenter(pc));
+      this.grid.remove(id);
+      this.building.delete(id);
+      this.damagedPieces.delete(id);
+      removed.push(id);
+      if (id <= this.mapPieceMax) this.removedMapPieces.add(id);
+      return true;
+    };
     const neighbors = new Set<number>();
     for (const id of ids) {
       const pc = this.grid.get(id);
       if (!pc) continue;
       for (const n of this.grid.neighbors(pc, id)) neighbors.add(n);
-      this.grid.remove(id);
-      this.building.delete(id);
-      this.damagedPieces.delete(id);
-      removed.push(id);
-      if (id <= this.mapPieceMax) this.removedMapPieces.add(id);
+      drop(id);
     }
     for (const id of removed) neighbors.delete(id);
-    const doomed = this.grid.findUnsupported(neighbors);
-    for (const id of doomed) {
-      this.grid.remove(id);
-      this.building.delete(id);
-      this.damagedPieces.delete(id);
-      removed.push(id);
-      if (id <= this.mapPieceMax) this.removedMapPieces.add(id);
+    for (const id of this.grid.findUnsupported(neighbors)) drop(id);
+    if (!removed.length) return;
+    this.broadcast({ e: 'p-', ids: removed });
+    this.settleItems(centers);
+  }
+
+  /** Loot that was resting on destroyed pieces falls to whatever is below it now. */
+  private settleItems(centers: { x: number; y: number; z: number }[]) {
+    for (const it of [...this.items.values()]) {
+      if (!centers.some((c) => Math.abs(c.x - it.x) < 3 && Math.abs(c.z - it.z) < 3 && Math.abs(c.y - it.y) < 3)) continue;
+      const g = this.world.groundAt(it.x, it.z, it.y + 0.1, 0.2);
+      const ground = g === NO_GROUND ? this.terrain.surfaceAt(it.x, it.z) : g;
+      if (ground >= it.y - 0.3) continue;
+      const from: [number, number, number] = [it.x, it.y, it.z];
+      it.y = Math.max(ground, WATER_LEVEL - 0.3);
+      this.broadcast({ e: 'i-', id: it.id });
+      this.broadcast({ e: 'i+', item: stripItem(it), from });
     }
-    if (removed.length) this.broadcast({ e: 'p-', ids: removed });
   }
 
   applyDamage(
@@ -1218,21 +1238,40 @@ export class Match {
   // Vehicles
   // -------------------------------------------------------------------------
 
+  private driveVehicle(v: VehicleState, driver: ServerPlayer | null, inp: VehicleInput | null, dt: number) {
+    const hits: VehicleHit[] = [];
+    const ox = v.x, oz = v.z;
+    stepVehicle(v, inp, dt, this.world, hits);
+    quantizeVehicle(v);
+    if (driver) driver.stats.vehicleDist += Math.hypot(v.x - ox, v.z - oz);
+    for (const h of hits) {
+      if (h.speed > 9) {
+        this.damageCollider(h.colliderOwnerKind, h.ownerId, h.speed * 9, null, false);
+        this.damageVehicle(v, h.speed * 1.5, null);
+      }
+    }
+    this.placeOccupants(v);
+  }
+
+  private placeOccupants(v: VehicleState) {
+    for (let i = 0; i < v.seats.length; i++) {
+      const q = v.seats[i] ? this.players.get(v.seats[i]) : undefined;
+      if (!q) continue;
+      const sp2 = seatWorldPos(v, i);
+      q.sim.x = sp2.x;
+      q.sim.y = sp2.y;
+      q.sim.z = sp2.z;
+      q.sim.vx = q.sim.vy = q.sim.vz = 0;
+      quantizeSim(q.sim);
+    }
+  }
+
   private updateVehicles() {
     for (const v of [...this.vehicles.values()]) {
       const driver = v.seats[0] ? this.players.get(v.seats[0]) : undefined;
-      const inp = driver ? this.vehicleInputs.get(v.id) ?? null : null;
-      const hits: VehicleHit[] = [];
-      const ox = v.x, oz = v.z;
-      stepVehicle(v, inp, TICK_DT, this.world, hits);
-      const moved = Math.hypot(v.x - ox, v.z - oz);
-      if (driver) driver.stats.vehicleDist += moved;
-      for (const h of hits) {
-        if (h.speed > 9) {
-          this.damageCollider(h.colliderOwnerKind, h.ownerId, h.speed * 9, null, false);
-          this.damageVehicle(v, h.speed * 1.5, null);
-        }
-      }
+      // driven vehicles advance with their driver's inputs; empty ones coast/settle here
+      if (!driver) this.driveVehicle(v, null, null, TICK_DT);
+      if (!this.vehicles.has(v.id)) continue;
       const sp = Math.abs(v.speed);
       if (sp > 8) {
         for (const q of this.players.values()) {
@@ -1250,16 +1289,7 @@ export class Match {
           }
         }
       }
-      for (let i = 0; i < v.seats.length; i++) {
-        const q = v.seats[i] ? this.players.get(v.seats[i]) : undefined;
-        if (!q) continue;
-        const sp2 = seatWorldPos(v, i);
-        q.sim.x = sp2.x;
-        q.sim.y = sp2.y;
-        q.sim.z = sp2.z;
-        q.sim.vx = q.sim.vy = q.sim.vz = 0;
-        quantizeSim(q.sim);
-      }
+      this.placeOccupants(v);
     }
   }
 
@@ -1313,7 +1343,6 @@ export class Match {
       p.sim.z = v.z + rz;
       const g = this.world.groundAt(p.sim.x, p.sim.z, v.y + 3, 0.4);
       p.sim.y = g === NO_GROUND ? v.y + 1 : Math.max(g, v.y) + 0.2;
-      this.vehicleInputs.delete(v.id);
     }
     p.vehicleId = 0;
     p.seat = 0;
@@ -1889,8 +1918,13 @@ export class Match {
         if (Math.hypot(pr.x - view.x, pr.z - view.z) > 450) continue;
         projs.push({ id: pr.id, kind: pr.kind, x: pr.x, y: pr.y, z: pr.z });
       }
+      let drive: Snapshot['drive'] = null;
+      const pv = p.vehicleId ? this.vehicles.get(p.vehicleId) : undefined;
+      if (pv && !p.eliminated) {
+        drive = { id: pv.id, seat: p.seat, st: p.seat === 0 ? { x: pv.x, y: pv.y, z: pv.z, yaw: pv.yaw, pitch: pv.pitch, roll: pv.roll, speed: pv.speed, vy: pv.vy } : null };
+      }
       const bin = encodeSnapshot(this.writer, {
-        tick: this.tick, time: this.time, ack: p.lastSeq, self: p.eliminated ? null : p.sim, ents, vehicles, projs, bus: busP,
+        tick: this.tick, time: this.time, ack: p.lastSeq, self: p.eliminated ? null : p.sim, drive, ents, vehicles, projs, bus: busP,
       });
       p.link.sendBin(bin);
     }

@@ -14,7 +14,7 @@ sound is synthesized with WebAudio. There are no external art or audio assets.
 | **Client** | TypeScript + Three.js, HTML/CSS UI, WebAudio synthesis, keyboard/mouse, touch and gamepad |
 | **Server** | Node.js + `ws`, authoritative 30 Hz simulation, binary snapshots, bots |
 | **Shared** | Deterministic simulation code used by both sides (movement, weapons, building, collision, map) |
-| **Tests** | 29 Vitest tests (unit, full-match simulations, networked integration) + Playwright browser e2e |
+| **Tests** | 30 Vitest tests (unit, full-match simulations, networked integration) + Playwright browser e2e |
 
 ## Quick start
 
@@ -78,8 +78,9 @@ glider → loot → fight → Surge phases shrink the map → last team standing
   (dense forest & Mirror Lake), Pitstop Junction (gas station & Rovers). Roads, beaches, a lake,
   cliffs, ~3,700 props and ~3,000 destructible building pieces.
 - **Everything is destructible & harvestable**: map buildings are made of the same build pieces
-  as player structures; smash them (and trees, rocks, cars) with the Pry Hammer for Timber /
-  Stone / Alloy.
+  as player structures (with the same structural integrity — knock out the ground floor and the
+  floors above collapse, loot falls); smash them (and trees, rocks, cars) with the Pry Hammer
+  for Timber / Stone / Alloy.
 - **Building**: walls, floors, ramps, roofs on a 4 m grid; snapping previews (blue/red), build-up
   health, material cost, rate limit, range and support validation, structural collapse, wall
   editing (door/window), instant client-side prediction for ramp rushing.
@@ -96,7 +97,8 @@ glider → loot → fight → Surge phases shrink the map → last team standing
 - **Progression**: levels, season pass (40 tiers), daily/weekly challenges, currency
   (*Glimmer*) earned by playing, rotating cosmetic shop, locker (outfits, headwear,
   backpacks, gliders, trails, emotes). Cosmetics never affect hitboxes or stats.
-- **Multiplayer**: server-authoritative everything, client prediction + reconciliation,
+- **Multiplayer**: server-authoritative everything, client prediction + reconciliation (also for
+  the vehicle you drive),
   interpolation, lag-compensated hitscan, interest management, binary snapshots,
   reconnect, spectating, parties, bots that use the exact same input pipeline as humans.
 - **Platforms**: desktop (keyboard/mouse, gamepad), mobile (touch controls, auto low quality),
@@ -128,14 +130,15 @@ docs/         design documents
 
 ```bash
 npm run typecheck
-npm test                      # 29 tests: sim, systems, full bot matches, networked play
+npm test                      # 30 tests: sim, systems, full bot matches, networked play
 DEV_COMMANDS=1 npm start &    # then, in another shell:
 QUALITY=low npm run e2e -- http://localhost:8080 screenshots
 ```
 
 The e2e script drives the real game in headless Chromium: menu → locker → lobby → build →
-transport → jump → skydive/glide → land → loot a cache → harvest → fight → map → inventory
-→ results/spectate → back to lobby with XP applied, saving screenshots of each step.
+transport → jump → skydive/glide → land → loot a cache → harvest → fight → drive a Rover →
+map → inventory → results/spectate → back to lobby with XP applied, saving screenshots of each
+step. Options: `MODE=duos|squads`, `FORCE_ELIM=1` (exercise results/spectating), `QUALITY=low|medium|high`.
 
 ## Documentation
 
@@ -148,8 +151,8 @@ transport → jump → skydive/glide → land → loot a cache → harvest → f
 ## Status and honest limitations
 
 This is a playable, tested prototype, not a shipped product. Notable gaps (tracked in
-[docs/PHASES.md](docs/PHASES.md)): vehicles are simulated server-side without client prediction
-(fine on LAN, noticeable at high ping); map structures are anchored (only player builds
-collapse); the underground bunker has no special lighting pass; bots navigate with local
-avoidance rather than a navmesh; persistence is a JSON file (swap for a database for real
-deployments); a single server process hosts all matches (no horizontal scaling/region routing).
+[docs/PHASES.md](docs/PHASES.md)): sniper shots are hitscan rather than ballistic; the
+underground bunker has no special lighting pass; bots navigate with local avoidance rather than
+a navmesh; persistence is a JSON file (swap for a database for real deployments); a single
+server process hosts all matches (no horizontal scaling/region routing); there is no
+skill-based matchmaking.

@@ -15,6 +15,7 @@ import { RNG } from '../src/shared/rng';
 import { BTN, InputCmd, Mode, SimEvent, copySim, createSim, stepSim } from '../src/shared/sim';
 import { STORM_PHASES } from '../src/shared/storm';
 import { Terrain } from '../src/shared/terrain';
+import { quantizeVehicle, stepVehicle } from '../src/shared/vehicle';
 
 let terrain: Terrain;
 let map: MapData;
@@ -293,10 +294,43 @@ describe('vehicles', () => {
     }
     expect(Math.hypot(v.x - x0, v.z - z0)).toBeGreaterThan(10);
     expect(Math.hypot(a.sim.x - v.x, a.sim.z - v.z)).toBeLessThan(2);
+    // client-side prediction of the driven vehicle replays bit-identically
+    const snap = { ...v };
+    const inputs = Array.from({ length: 30 }, (_, i) => ({ mx: Math.sin(i / 5), mz: 1, handbrake: i % 10 === 0 }));
+    const client = { ...snap, seats: [...snap.seats] };
+    for (const inp of inputs) {
+      stepVehicle(v, inp, INPUT_DT, m.world, []);
+      quantizeVehicle(v);
+      stepVehicle(client, inp, INPUT_DT, m.world, []);
+      quantizeVehicle(client);
+    }
+    expect([client.x, client.y, client.z, client.yaw]).toEqual([v.x, v.y, v.z, v.yaw]);
     a.queue.push({ kind: 'action', act: { a: 'exitVehicle' } });
     m.update();
     expect(a.sim.mode).toBe(Mode.Walk);
     expect(v.seats[0]).toBe(0);
+  });
+});
+
+describe('map structural integrity', () => {
+  it('knocking out a house wall stack collapses what it held up, and loot falls', () => {
+    const { m } = playingMatch('solo', [[1], [2]]);
+    // find a two-storey map building: an upper floor supported only through walls
+    const upper = [...m.grid.pieces.values()].find((p) => p.owner === 0 && p.type === 'floor' && !p.grounded && !p.anchored && p.j >= 3);
+    expect(upper).toBeDefined();
+    const before = m.grid.pieces.size;
+    // destroy every grounded piece of that building's footprint area
+    const near = [...m.grid.pieces.values()].filter((p) => p.owner === 0 && !p.anchored && Math.abs(p.i - upper!.i) <= 6 && Math.abs(p.k - upper!.k) <= 6 && p.grounded);
+    for (const p of near) m.damagePiece(p, 1e6);
+    expect(m.grid.get(upper!.id)).toBeUndefined();
+    expect(m.grid.pieces.size).toBeLessThan(before - near.length);
+    // nothing floats: every item near the collapse rests on whatever is below it
+    for (const it of m.items.values()) {
+      if (Math.abs(it.x - (upper!.i + 0.5) * GRID) > 10 || Math.abs(it.z - (upper!.k + 0.5) * GRID) > 10) continue;
+      const g = m.world.groundAt(it.x, it.z, it.y + 0.1, 0.2);
+      const ground = g === -1e9 ? terrain.surfaceAt(it.x, it.z) : g;
+      expect(it.y - ground).toBeLessThan(0.45);
+    }
   });
 });
 
