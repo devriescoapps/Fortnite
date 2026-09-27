@@ -684,6 +684,8 @@ interface LocalBullet {
 export class ProjectileRenderer {
   views = new Map<number, ProjView>();
   private locals: LocalBullet[] = [];
+  /** Predicted bullets spawned so far (diagnostics / e2e). */
+  spawned = 0;
   /** World ray test used to stop predicted bullets; returns hit distance or null. */
   raycast: (o: THREE.Vector3, d: THREE.Vector3, max: number) => number | null = () => null;
   onImpact: (p: THREE.Vector3) => void = () => {};
@@ -741,6 +743,7 @@ export class ProjectileRenderer {
     mesh.position.copy(pos);
     this.scene.add(mesh);
     this.locals.push({ mesh, pos: pos.clone(), vel: vel.clone(), gravity, range });
+    this.spawned++;
   }
 
   private stepLocals(dt: number) {

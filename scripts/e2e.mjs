@@ -246,15 +246,14 @@ const sniper = await page.evaluate(async () => {
   m.slotReq = wi;
   await new Promise((r) => setTimeout(r, 900));
   g.view.pitch = 0.05;
-  let maxLocal = 0;
+  const spawned0 = g.projectiles.spawned;
   for (let i = 0; i < 3; i++) {
-    g.input.lmb = true;
-    await new Promise((r) => setTimeout(r, 120));
+    g.input.lmb = true; // held long enough to be sampled even at single-digit software-GL frame rates
+    await new Promise((r) => setTimeout(r, 250));
     g.input.lmb = false;
-    maxLocal = Math.max(maxLocal, g.projectiles.locals.length);
     await new Promise((r) => setTimeout(r, 400));
   }
-  return { given: true, maxLocal, mag: m.sim.inv.slots[wi]?.mag };
+  return { given: true, predictedBullets: g.projectiles.spawned - spawned0, mag: m.sim.inv.slots[wi]?.mag };
 });
 console.log('sniper', JSON.stringify(sniper));
 // Vehicles: hop next to a Rover, get in, drive (client-predicted), get out
@@ -299,6 +298,11 @@ if (process.env.FORCE_ELIM) {
 const died = await page.evaluate(() => window.game.m?.eliminated);
 if (died) {
   await page.waitForSelector('#lobby', { timeout: 15000 }).catch(() => {});
+  // regression: toggling the inventory while dead must not re-grab the cursor from the results screen
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(300);
   await shot('12-results');
   console.log('death', await page.evaluate(() => ({ feed: document.querySelector('.feed')?.textContent, results: window.game.m?.results && { placement: window.game.m.results.placement, survived: window.game.m.results.survived } })));
   const spec = await page.$('#spec');
