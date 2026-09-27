@@ -11,6 +11,7 @@ export interface ServerConfig {
   botSkill: number; // 0..1 average bot skill
   fillBots: boolean;
   maxMatches: number;
+  devCommands: boolean; // enables teleport/give helpers for testing (never enable in production)
 }
 
 const num = (v: string | undefined, d: number) => (v !== undefined && v !== '' && !Number.isNaN(Number(v)) ? Number(v) : d);
@@ -27,5 +28,6 @@ export function loadConfig(): ServerConfig {
     botSkill: Math.max(0, Math.min(1, num(e.BOT_SKILL, 0.5))),
     fillBots: e.FILL_BOTS !== '0',
     maxMatches: num(e.MAX_MATCHES, 8),
+    devCommands: e.DEV_COMMANDS === '1',
   };
 }

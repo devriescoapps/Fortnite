@@ -196,6 +196,9 @@ function handle(c: Conn, msg: any, resetSeq: () => void) {
     case 'ping':
       c.send({ t: 'pong', c: msg.c, s: Date.now() });
       break;
+    case 'dev':
+      if (cfg.devCommands && c.match && c.player) c.match.dev(c.player, msg);
+      break;
   }
 }
 

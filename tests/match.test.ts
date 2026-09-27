@@ -9,7 +9,7 @@ const terrain = new Terrain();
 const map = generateMap(terrain);
 
 function cfg(over: Partial<ServerConfig> = {}): ServerConfig {
-  return { port: 0, dataDir: 'data-test', maxPlayers: 16, lobbyTime: 3, queueWait: 0, stormScale: 0.35, botSkill: 0.6, fillBots: true, maxMatches: 1, ...over };
+  return { port: 0, dataDir: 'data-test', maxPlayers: 16, lobbyTime: 3, queueWait: 0, stormScale: 0.35, botSkill: 0.6, fillBots: true, maxMatches: 1, devCommands: false, ...over };
 }
 
 function runToEnd(m: Match, maxTicks: number) {

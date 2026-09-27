@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#1b1238" />
+    <title>SURGEFALL</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M36 2 10 36h16l-6 26 30-38H34z' fill='%23ffd23f' stroke='%238b5cff' stroke-width='4'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="view"></canvas>
+      <div id="numbers"></div>
+      <div id="tags"></div>
+      <div id="hud" class="hidden"></div>
+      <div id="screens"></div>
+      <div id="toast-layer"></div>
+      <div id="boot" class="screen boot">
+        <div class="logo big">SURGE<span>FALL</span></div>
+        <div class="boot-msg">Generating the island…</div>
+      </div>
+    </div>
+    <script type="module" src="game.js"></script>
+  </body>
+</html>

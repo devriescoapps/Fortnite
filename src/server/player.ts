@@ -31,6 +31,8 @@ export class ServerPlayer {
   lastViewTick = 0;
   inputBudget = 0.1;
   lastInputAt = 0;
+  /** Idle inputs the server simulated while the client was silent; refunded when real inputs arrive. */
+  fillerDebt = 0;
 
   alive = true; // standing or downed
   downed = false;

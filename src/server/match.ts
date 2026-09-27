@@ -312,6 +312,29 @@ export class Match {
     p.link = null;
   }
 
+  /** Development helpers (only reachable when DEV_COMMANDS=1). */
+  dev(p: ServerPlayer, cmd: { cmd: string; x?: number; z?: number; id?: string; rarity?: number }) {
+    const s = p.sim;
+    if (cmd.cmd === 'teleport' && Number.isFinite(cmd.x) && Number.isFinite(cmd.z)) {
+      const g = this.world.groundAt(cmd.x!, cmd.z!, 500, 0.4);
+      s.x = cmd.x!;
+      s.z = cmd.z!;
+      s.y = (g === NO_GROUND ? this.terrain.surfaceAt(cmd.x!, cmd.z!) : g) + 0.3;
+      s.vx = s.vy = s.vz = 0;
+      s.mode = Mode.Walk;
+      s.grounded = false;
+      p.landed = true;
+      quantizeSim(s);
+    } else if (cmd.cmd === 'give' && cmd.id && ITEM_BY_ID[cmd.id]) {
+      const def = ITEM_BY_ID[cmd.id];
+      if (def.ammoType) s.inv.ammo[AMMO_TYPES.indexOf(def.ammoType)] += 60;
+      else {
+        const i = s.inv.slots.findIndex((x, k) => k > 0 && !x);
+        if (i > 0) s.inv.slots[i] = makeStack(cmd.id, Math.max(0, Math.min(4, cmd.rarity ?? 2)), def.stack > 1 ? def.stack : 1);
+      }
+    }
+  }
+
   findByProfile(profileId: string) {
     for (const p of this.players.values()) if (p.profile && p.profile.id === profileId && !p.leftMatch) return p;
     return undefined;
@@ -419,8 +442,13 @@ export class Match {
       while (p.queue.length) {
         const q = p.queue[0];
         if (q.kind === 'input') {
-          if (p.inputBudget < INPUT_DT - 1e-6) break;
-          p.inputBudget -= INPUT_DT;
+          // Inputs that replace idle filler steps are free (the filler already used their time slot);
+          // everything else must fit the real-time budget, which prevents speed hacks.
+          if (p.fillerDebt > 0) p.fillerDebt--;
+          else {
+            if (p.inputBudget < INPUT_DT - 1e-6) break;
+            p.inputBudget -= INPUT_DT;
+          }
           p.lastInputAt = this.time;
           this.processInput(p, q.cmd);
         } else {
@@ -429,9 +457,10 @@ export class Match {
         p.queue.shift();
       }
       // A client that stops sending inputs keeps being simulated (gravity, storm) with idle input.
-      if (!p.isBot && this.time - p.lastInputAt > 0.25 && !p.eliminated) {
+      if (!p.isBot && this.time - p.lastInputAt > 0.25 && !p.eliminated && p.queue.length === 0) {
         while (p.inputBudget >= INPUT_DT) {
           p.inputBudget -= INPUT_DT;
+          if (p.fillerDebt < 600) p.fillerDebt++;
           const s = p.sim;
           this.processInput(p, { seq: p.lastSeq, mx: 0, mz: 0, yaw: s.yaw, pitch: s.pitch, buttons: 0, slot: 255, viewTick: this.tick }, true);
         }
@@ -1390,12 +1419,22 @@ export class Match {
     this.broadcast({ e: 'p+', p: pieceInfo(copy) });
   }
 
+  /** Line of sight from a player's chest to a point (walls block looting through them). */
+  hasLOS(p: ServerPlayer, x: number, y: number, z: number) {
+    const ox = p.sim.x, oy = p.sim.y + 1.2, oz = p.sim.z;
+    const dx = x - ox, dy = y - oy, dz = z - oz;
+    const d = Math.hypot(dx, dy, dz);
+    if (d < 0.9) return true;
+    return !this.world.raycast(ox, oy, oz, dx / d, dy / d, dz / d, d - 0.35, undefined, true);
+  }
+
   private pickup(p: ServerPlayer, id: number) {
     const it = this.items.get(id);
     const s = p.sim;
     if (!it || p.downed) return;
     if (s.mode !== Mode.Walk && s.mode !== Mode.Swim) return;
     if (Math.hypot(it.x - s.x, it.y - (s.y + 0.5), it.z - s.z) > PICKUP_RANGE + 1.2) return;
+    if (!this.hasLOS(p, it.x, it.y + 0.3, it.z)) return;
     const def = ITEM_BY_CODE[it.code];
     const inv = s.inv;
     if (def.category === 'special') {
@@ -1529,6 +1568,10 @@ export class Match {
       return;
     }
     if (s.mode !== Mode.Walk) return;
+    if (kind === 'chest' || kind === 'ammo' || kind === 'supply') {
+      const c = this.containers.get(id);
+      if (!c || !this.hasLOS(p, c.x, c.y + 0.5, c.z)) return;
+    }
     let dur = 0;
     if (kind === 'chest') {
       const c = this.containers.get(id);
