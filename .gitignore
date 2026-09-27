@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+*.log
+test-results/
+screenshots/
+.DS_Store

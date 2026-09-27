@@ -1,0 +1,31 @@
+{
+  "name": "surgefall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SURGEFALL - an original stylized third-person multiplayer battle royale (browser client + authoritative Node server)",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/server.js",
+    "dev": "node scripts/build.mjs --watch",
+    "play": "node scripts/build.mjs && node dist/server.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/three": "^0.186.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}
