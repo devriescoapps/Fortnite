@@ -34,6 +34,10 @@ export class Input {
   private actions: ActionName[] = [];
   locked = false;
   captureEnabled = false; // true while playing (no menu open)
+  /** Pointer lock was refused after a click (e.g. an embedding frame): look by dragging instead. */
+  lockFailed = false;
+  onLockFailed: () => void = () => {};
+  private lockFromGesture = false;
   /** Where the latest input came from (drives touch-mode switching and aim assist). */
   source: InputSource = 'kbm';
   onSource: (s: InputSource) => void = () => {};
@@ -71,8 +75,8 @@ export class Input {
       if (this.fromTouch()) return;
       this.usingPad = false;
       this.setSource('kbm');
-      if (this.captureEnabled && !this.locked) {
-        this.requestLock();
+      if (this.captureEnabled && !this.locked && !this.lockFailed) {
+        this.requestLock(true);
         return;
       }
       if (e.button === 0) {
@@ -88,7 +92,9 @@ export class Input {
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
+      // without pointer lock, holding a mouse button and dragging looks around
+      const drag = this.lockFailed && this.captureEnabled && (e.buttons & 3) !== 0 && !this.fromTouch();
+      if (!this.locked && !drag) return;
       this.mouseDX += e.movementX;
       this.mouseDY += e.movementY;
       if (e.movementX || e.movementY) this.setSource('kbm');
@@ -97,6 +103,7 @@ export class Input {
       if (!this.captureEnabled) return;
       this.actions.push(e.deltaY > 0 ? 'slotNext' : 'slotPrev');
     });
+    document.addEventListener('pointerlockerror', () => this.lockRefused());
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
       if (!this.locked) {
@@ -124,14 +131,23 @@ export class Input {
     this.mouseDX = this.mouseDY = this.padDX = this.padDY = this.touchDX = this.touchDY = 0;
   }
 
-  requestLock() {
-    if (this.locked || this.fromTouch()) return;
+  /** `fromGesture`: requested from a click; a refusal then means lock is unavailable here. */
+  requestLock(fromGesture = false) {
+    if (this.locked || this.fromTouch() || this.lockFailed) return;
+    this.lockFromGesture = fromGesture;
     try {
-      const p = this.canvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
-      if (p && typeof p.catch === 'function') p.catch(() => {});
+      if (!this.canvas.requestPointerLock) return this.lockRefused();
+      const p = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      if (p && typeof p.catch === 'function') p.catch(() => this.lockRefused());
     } catch {
-      /* not supported (e.g. mobile) */
+      this.lockRefused();
     }
+  }
+
+  private lockRefused() {
+    if (!this.lockFromGesture || this.lockFailed) return; // automatic requests may fail without a click
+    this.lockFailed = true;
+    this.onLockFailed();
   }
 
   exitLock() {

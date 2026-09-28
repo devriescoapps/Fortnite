@@ -254,6 +254,7 @@ export class Game {
     this.applyTouchLook();
     this.setTouchMode(IS_MOBILE || (HAS_TOUCH && !matchMedia('(pointer: fine)').matches));
     this.input.onSource = (src) => this.onInputSource(src);
+    this.input.onLockFailed = () => this.hud.toast('Mouse capture is blocked here: hold a mouse button and drag to look', 'warn');
     this.bindMobileShell();
     document.getElementById('boot')!.remove();
     // Online when a game server answers; otherwise (static hosting, file://, ?mode=offline) the

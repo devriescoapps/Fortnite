@@ -29,15 +29,10 @@ const clientBuild = {
 };
 
 // ---- static web build (offline play) ----
-await esbuild.build({ ...clientBuild, outfile: join(WEB, 'game.js') });
+// No game server on a static host: the bundle itself selects offline mode (no inline script,
+// so hosts with a strict Content-Security-Policy work too).
+await esbuild.build({ ...clientBuild, outfile: join(WEB, 'game.js'), banner: { js: 'window.SURGEFALL_MODE = window.SURGEFALL_MODE || "offline";' } });
 cpSync('public', WEB, { recursive: true });
-const html = readFileSync(join(WEB, 'index.html'), 'utf8').replace(
-  '<script defer src="game.js"></script>',
-  // no game server on a static host: run the server in the browser right away
-  '<script>window.SURGEFALL_MODE = "offline";</script>\n    <script defer src="game.js"></script>',
-);
-if (!html.includes('SURGEFALL_MODE')) throw new Error('index.html script tag not found');
-writeFileSync(join(WEB, 'index.html'), html);
 
 // ---- multiplayer server package ----
 await esbuild.build({ ...clientBuild, outfile: join(SRV, 'dist', 'client', 'game.js') });

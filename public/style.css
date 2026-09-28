@@ -1,5 +1,6 @@
 /* SURGEFALL UI — original look: electric violet, cyan and sunny yellow, chunky rounded type. */
 :root {
+  color-scheme: dark;
   --violet: #8b5cff;
   --violet-d: #5a2fd6;
   --cyan: #3ff0ff;
