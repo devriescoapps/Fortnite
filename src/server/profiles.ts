@@ -1,8 +1,7 @@
-// Persistent player profiles (JSON file store with atomic, debounced writes).
+// Persistent player profiles (JSON store with debounced writes to a pluggable backend:
+// a file on the Node server, localStorage when the server runs in the browser for offline play).
 // All progression math runs here on the server so clients cannot grant themselves XP.
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomHex } from '../shared/ids';
 import type { CosmeticLoadout, ResultsMsg } from '../shared/protocol';
 import {
   COSMETIC_BY_ID, DEFAULT_LOADOUT, MatchStats, activeChallenges, addXp, challengeIncrement, dayIndex, defaultOwned,
@@ -64,21 +63,26 @@ export function sanitizeName(n: unknown): string {
   return clean.length >= 2 ? clean : `Player${Math.floor(Math.random() * 9000 + 1000)}`;
 }
 
+/** Where the profile JSON lives. `null` = in-memory only (tests). */
+export interface ProfileBackend {
+  load(): string | null;
+  save(json: string): void;
+}
+
 export class ProfileStore {
   private byToken = new Map<string, Profile>();
-  private file: string;
   private dirty = false;
-  private timer: NodeJS.Timeout | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private dir: string, private persist = true) {
-    this.file = join(dir, 'profiles.json');
-    if (persist) this.load();
+  constructor(private backend: ProfileBackend | null, private debounceMs = 1500) {
+    if (backend) this.load();
   }
 
   private load() {
     try {
-      if (!existsSync(this.file)) return;
-      const arr = JSON.parse(readFileSync(this.file, 'utf8')) as Profile[];
+      const raw = this.backend!.load();
+      if (!raw) return;
+      const arr = JSON.parse(raw) as Profile[];
       for (const p of arr) this.byToken.set(p.token, this.migrate(p));
     } catch (e) {
       console.warn('[profiles] failed to load, starting fresh:', (e as Error).message);
@@ -100,8 +104,8 @@ export class ProfileStore {
 
   create(name: string): Profile {
     const p: Profile = {
-      id: randomBytes(6).toString('hex'),
-      token: randomBytes(24).toString('hex'),
+      id: randomHex(6),
+      token: randomHex(24),
       name: sanitizeName(name),
       created: Date.now(),
       level: 1,
@@ -211,20 +215,18 @@ export class ProfileStore {
   }
 
   markDirty() {
-    if (!this.persist) return;
+    if (!this.backend) return;
     this.dirty = true;
-    if (!this.timer) this.timer = setTimeout(() => this.flush(), 1500);
+    if (!this.timer) this.timer = setTimeout(() => this.flush(), this.debounceMs);
   }
 
   flush() {
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.dirty || !this.persist) return;
+    if (!this.dirty || !this.backend) return;
     this.dirty = false;
     try {
-      mkdirSync(this.dir, { recursive: true });
-      const tmp = this.file + '.tmp';
-      writeFileSync(tmp, JSON.stringify([...this.byToken.values()]));
-      renameSync(tmp, this.file);
+      this.backend.save(JSON.stringify([...this.byToken.values()]));
     } catch (e) {
       console.warn('[profiles] save failed:', (e as Error).message);
     }

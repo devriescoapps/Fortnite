@@ -401,7 +401,7 @@ describe('loot & progression', () => {
   });
 
   it('awards XP, levels, currency and challenge progress server-side', () => {
-    const store = new ProfileStore('unused', false);
+    const store = new ProfileStore(null);
     const p = store.create('Tester');
     const stats = { ...emptyStats(), kills: 3, damage: 900, chests: 5, placement: 1, won: true, timeAlive: 600, builds: 60 };
     const res = store.applyMatch(p, stats, 20);

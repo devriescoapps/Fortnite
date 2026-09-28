@@ -4,6 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#1b1238" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SURGEFALL" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="description" content="SURGEFALL — an original stylized battle royale that runs in your browser. Drop, loot, build, outlast the Surge." />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icon-180.png" />
     <title>SURGEFALL</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,11 +27,12 @@
       <div id="hud" class="hidden"></div>
       <div id="screens"></div>
       <div id="toast-layer"></div>
+      <div id="rotate"><div><div class="ph"></div><div class="logo" style="font-size:26px">SURGE<span>FALL</span></div><p class="muted">Turn your phone sideways to play</p></div></div>
       <div id="boot" class="screen boot">
         <div class="logo big">SURGE<span>FALL</span></div>
         <div class="boot-msg">Generating the island…</div>
       </div>
     </div>
-    <script type="module" src="game.js"></script>
+    <script defer src="game.js"></script>
   </body>
 </html>

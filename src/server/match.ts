@@ -1,12 +1,12 @@
 // Authoritative match: lifecycle (lobby -> transport -> play -> ended), input processing,
 // combat with lag compensation, loot, building, storm, vehicles, projectiles, rebirth,
 // spectating and replication with interest management.
-import { randomBytes } from 'node:crypto';
 import { ByteWriter } from '../shared/binary';
 import {
   BUILD_MATS, BuildGrid, MATERIALS, Piece, PieceSpec, PieceType, WallVariant, inBuildRange, isPieceGrounded, pieceCenter, slotKey,
 } from '../shared/build';
 import { CollisionWorld, OwnerKind, Shape } from '../shared/collision';
+import { randomHex } from '../shared/ids';
 import {
   BUILD_COST, BUILD_INTERVAL, DOWNED_BLEED, DOWNED_HEALTH, GRID, INPUT_DT, INTERACT_RANGE, MATCH_DEFAULTS, MAX_HEALTH, MAX_LAG_COMP, MAX_MATERIAL,
   MAX_SHIELD, MOVE, Mode as GameMode, PICKUP_RANGE, REVIVE_HEALTH, REVIVE_TIME, SKYPORT, TEAM_SIZE, TICK_DT, TICK_RATE, WATER_LEVEL,
@@ -90,7 +90,7 @@ const FEED_CAUSES: Record<string, string> = {
 };
 
 export class Match {
-  readonly id = randomBytes(4).toString('hex');
+  readonly id = randomHex(4);
   readonly mode: GameMode;
   readonly teamSize: number;
   readonly cfg: ServerConfig;
@@ -330,12 +330,17 @@ export class Match {
       s.grounded = false;
       p.landed = true;
       quantizeSim(s);
+    } else if (cmd.cmd === 'god') {
+      p.god = true;
     } else if (cmd.cmd === 'eliminate') {
       if (!p.eliminated) this.eliminate(p, null, 'void');
     } else if (cmd.cmd === 'give' && cmd.id && ITEM_BY_ID[cmd.id]) {
       const def = ITEM_BY_ID[cmd.id];
       if (def.ammoType) s.inv.ammo[AMMO_TYPES.indexOf(def.ammoType)] += 60;
-      else {
+      else if (def.material) {
+        const k = ['timber', 'stone', 'alloy'].indexOf(def.material);
+        s.inv.mats[k] = Math.min(MAX_MATERIAL, s.inv.mats[k] + 200);
+      } else {
         const i = s.inv.slots.findIndex((x, k) => k > 0 && !x);
         if (i > 0) s.inv.slots[i] = makeStack(cmd.id, Math.max(0, Math.min(4, cmd.rarity ?? 2)), def.stack > 1 ? def.stack : 1);
       }
@@ -936,7 +941,7 @@ export class Match {
     attacker: ServerPlayer | null,
     info: { cause: 'weapon' | 'explosion' | 'storm' | 'fall' | 'vehicle'; head?: boolean; code?: number; x?: number; y?: number; z?: number },
   ): number {
-    if (!target.alive || amount <= 0) return 0;
+    if (!target.alive || amount <= 0 || target.god) return 0;
     if (this.phase === 'lobby' || this.phase === 'ended') return 0;
     const s = target.sim;
     if (s.mode === Mode.Bus) return 0;

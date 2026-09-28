@@ -414,7 +414,8 @@ unlocks cosmetics and currency. Three daily + four weekly challenges rotate dete
 Cosmetics are purely visual (identical hitboxes).
 
 **Implementation steps.** ✅ HUD · ✅ inventory · ✅ minimap/full map · ✅ menus & locker preview ·
-✅ XP/levels/pass/challenges/currency/shop · ✅ results screen with XP breakdown · ✅ touch UI ·
+✅ XP/levels/pass/challenges/currency/shop · ✅ results screen with XP breakdown · ✅ touch UI
+(see [Mobile support](#mobile-support-and-distribution)) ·
 ⏭ accessibility pass (colorblind rarity palette, text scaling) · ⏭ localization.
 
 **Testing requirements.** Reward math; level/tier rollovers; challenge progress; UI flows
@@ -443,7 +444,8 @@ victory/defeat music and menu music — all positional (HRTF) with distance muff
 feedback; camera shake; FOV transitions; glider trails (cosmetic).
 
 **Implementation steps.** ✅ instancing/culling/LOD · ✅ quality presets · ✅ binary protocol +
-interest · ✅ reconciliation coalescing · ✅ slow-device catch-up · ⏭ web worker for map
+interest · ✅ reconciliation coalescing · ✅ slow-device catch-up · ✅ dynamic resolution + frame
+cap · ⏭ web worker for map
 generation · ⏭ texture atlases + GPU-driven culling · ⏭ delta-compressed snapshots ·
 ⏭ occlusion culling inside the city · ⏭ profiling budget CI job.
 
@@ -451,3 +453,70 @@ generation · ⏭ texture atlases + GPU-driven culling · ⏭ delta-compressed s
 `renderer.info`); server tick cost per player; bandwidth per client; soak tests with many bots.
 Current reference numbers: 150–300 draw calls per frame; a 16-bot match simulates to completion
 in < 1 s of CPU; 32 players ≈ 1 KB per snapshot per client.
+
+---
+
+## Mobile support and distribution
+
+**Architecture.** One client build serves every device. A *touch mode* switches on for phones
+and tablets (and for touch laptops whenever the last input was a touch) and swaps pointer lock
+for an on-screen control layer. The game can also run with **no server at all**: the
+authoritative server code (gateway → matchmaker → match → bots → profiles) is transport-agnostic
+and runs inside the browser behind an in-memory link, so the same build works from a static
+host, from `file://`, or connected to the multiplayer server.
+
+**Required components.** `client/input.ts` (`TouchControls`: floating stick, context-aware
+buttons, build row, multi-touch look; separate mouse/pad/touch look deltas), `client/aimassist.ts`
+(pure friction/magnetism/ADS-snap math), `client/game.ts` (touch mode, contextual USE labels,
+sprint lock, auto-fire, haptics, fullscreen + landscape lock, adaptive resolution, frame cap,
+online/offline selection), `client/local.ts` (`LocalNet`), `server/gateway.ts` (`Session`,
+`Gateway`, `startLoop` shared by WebSockets and offline play), `server/profiles.ts`
+(`ProfileBackend`: file on Node, `localStorage` offline), `public/style.css` (`--bs`-scaled
+layout, safe areas, rotate hint), `public/manifest.webmanifest` + icons, `scripts/export.mjs`,
+`scripts/zip.mjs`, `docs/DEPLOY.md`, `Dockerfile`.
+
+**Data structures.**
+```ts
+TouchContext = 'walk' | 'build' | 'swim' | 'air' | 'bus' | 'vehicle' | 'downed' | 'spec' | 'hidden'
+LookDelta { mouse{dx,dy}, pad{dx,dy}, touch{dx,dy} }            // each source has its own sensitivity
+AssistPick { target, dYaw, dPitch, ang, radius, dist }            // capture cone widens for near targets
+Settings += { touchSensitivity, buttonScale, buttonOpacity, aimAssist, autoFire, vibration, fullscreen, dynamicRes, fpsCap }
+NetLike { onMessage, onSnapshot, onOpen, onClose, connected, rtt, connect(), send(), sendInputs() }  // Net | LocalNet
+ProfileBackend { load(): string | null; save(json) }
+```
+
+**Networking considerations.** Touch play uses exactly the same input stream as keyboard/mouse,
+so the server needs no changes and validates everything as before. Aim assist only rotates the
+local view (never for mouse aim); hits are still resolved on the server from inputs. Offline, the
+link applies client messages synchronously (keeping the action/input ordering a WebSocket
+guarantees), delivers server messages in a microtask, copies snapshot buffers, and JSON-clones
+messages so client and server never share objects. Inputs still go through the binary encoder, so
+quantization is identical online and offline.
+
+**Core gameplay logic.** Controls change with context: DROP on the transport, GLIDE in the air,
+BRAKE/EXIT in a Rover, PLACE + piece row + material + edit while building, only ☰ while
+spectating. The USE button appears only when something is usable and names it (PICK UP, OPEN,
+REVIVE, REBIRTH, DRIVE). Pushing the stick past its ring sprints; RUN locks sprint. The fire
+button doubles as a look pad. Aim assist (default 0.7): friction ≤ 55 % near a target, a bounded
+pull toward it while the player is active, and a 65 % gap-close on ADS press, with line-of-sight
+checks. Optional auto-fire pulses semi-automatic weapons. Dynamic resolution lowers the render
+scale when frames drop below 28 fps and restores it after sustained fast frames. Without a
+server, matches fill with bots and progress is saved on the device.
+
+**Implementation steps.** ✅ touch controls with contexts and no overlaps (auto-scaled to screen
+height, safe-area aware) · ✅ touch-friendly hotbar, inventory (tap to move), full map (tap to
+mark), menus (single-row tabs, visible PLAY), touch settings · ✅ aim assist + auto-fire + haptics
+· ✅ fullscreen/landscape lock, rotate hint, PWA manifest, gesture/zoom guards, input release on
+app switch · ✅ adaptive resolution + frame cap · ✅ offline mode (server in the browser) ·
+✅ `npm run export` (static zip + self-contained server zip + Docker) · ⏭ customizable HUD layout
+editor · ⏭ gyro aiming · ⏭ service worker for installable offline play · ⏭ relay/peer-to-peer
+hosting so a phone can host friends without a server.
+
+**Testing requirements.** Assist math (capture cone, friction bounds, magnetism without
+overshoot, ADS snap, LOS filtering, auto-fire trigger); offline mode end to end; real multi-touch
+flows on emulated phones; no overlapping or off-screen controls across contexts and sizes.
+Covered by `tests/aimassist.test.ts`, `tests/offline.test.ts` (welcome → bot-filled match →
+acknowledged inputs → profile saved to localStorage) and `scripts/e2e-mobile.mjs` (38 checks:
+menu layout, stick, look, two-finger move+look, build/PLACE, DROP/air, hotbar, FIRE, inventory
+tap-to-move, map tap-to-mark, contextual USE on a cache, DRIVE/EXIT, rotate hint, pause/leave,
+overlap scans; run against both the online server and the offline export).

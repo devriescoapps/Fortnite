@@ -5,7 +5,20 @@ import type { InputCmd } from '../shared/sim';
 
 export type MsgHandler = (msg: any) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-export class Net {
+/** What the game needs from a connection: the WebSocket client below, or LocalNet (offline). */
+export interface NetLike {
+  onMessage: MsgHandler;
+  onSnapshot: (s: Snapshot) => void;
+  onOpen: () => void;
+  onClose: () => void;
+  readonly connected: boolean;
+  readonly rtt: number;
+  connect(): void;
+  send(msg: unknown): void;
+  sendInputs(list: InputCmd[]): void;
+}
+
+export class Net implements NetLike {
   private ws: WebSocket | null = null;
   private writer = new ByteWriter(512);
   onMessage: MsgHandler = () => {};
@@ -17,24 +30,57 @@ export class Net {
   bytesIn = 0;
   private pingTimer = 0;
   private retry = 0;
+  everConnected = false;
+  private stopped = false;
+  /** Called when a connection attempt fails before the first successful open. */
+  onFirstFailure: () => void = () => {};
 
   constructor(private url: string) {}
 
+  /** Stop for good (switching to offline mode). */
+  stop() {
+    this.stopped = true;
+    clearInterval(this.pingTimer);
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onclose = ws.onerror = ws.onmessage = ws.onopen = null;
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   connect() {
-    const ws = new WebSocket(this.url);
+    if (this.stopped) return;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.url);
+    } catch {
+      if (!this.everConnected) this.onFirstFailure();
+      else setTimeout(() => this.connect(), Math.min(8000, 500 * 2 ** this.retry++));
+      return;
+    }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
+      this.everConnected = true;
       this.retry = 0;
       this.onOpen();
       clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => this.send({ t: 'ping', c: performance.now() }), 2000);
     };
     ws.onclose = () => {
+      if (this.stopped) return;
       this.connected = false;
       clearInterval(this.pingTimer);
-      this.onClose();
+      if (!this.everConnected) {
+        this.onFirstFailure();
+        if (this.stopped) return;
+      } else this.onClose();
       const delay = Math.min(8000, 500 * 2 ** this.retry++);
       setTimeout(() => this.connect(), delay);
     };

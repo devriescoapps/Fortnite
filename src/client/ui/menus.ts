@@ -45,6 +45,10 @@ export interface MenuCtx {
   preview(l: CosmeticLoadout): void;
   click(): void;
   connected(): boolean;
+  /** Touch UI is active (phone/tablet). */
+  touch(): boolean;
+  /** Playing without a server: the match runs in this browser against bots. */
+  offline(): boolean;
 }
 
 type Tab = 'play' | 'locker' | 'challenges' | 'pass' | 'shop' | 'career' | 'settings';
@@ -130,23 +134,30 @@ export class Menus {
           <div class="modes">${modes.map(([m, n, d]) => `<button class="mode ${this.mode === m ? 'on' : ''}" data-mode="${m}">${n}<small>${d}</small></button>`).join('')}</div>
         </div>
         <button class="play-btn" id="play" ${leader && this.ctx.connected() ? '' : 'disabled style="opacity:.5"'}>${leader ? 'PLAY' : 'WAITING FOR LEADER'}</button>
-        <div class="card">
+        ${this.ctx.offline() ? `<div class="card"><h3>Offline mode</h3><div class="muted" style="font-size:13px">No game server here, so matches run right in your browser against bots. Progress is saved on this device. Host the server build for online play with friends.</div></div>` : `<div class="card">
           <h3>Party</h3>
           ${info ? `<div class="row"><span class="muted">Code</span> <b style="font-size:22px;letter-spacing:.15em">${info.code}</b><button class="btn small ghost" id="pleave">Leave</button></div>
             <div class="party-list">${info.members.map((m) => `<div class="party-member"><span class="lvl" style="min-width:26px;height:26px;font-size:12px">${m.level}</span>${esc(m.name)}${m.id === info.leader ? ' 👑' : ''}</div>`).join('')}</div>`
             : `<div class="row"><button class="btn" id="pcreate">Create party</button><input class="field" id="pcode" maxlength="6" placeholder="CODE" style="width:100px;text-transform:uppercase"><button class="btn ghost" id="pjoin">Join</button></div>
                <div class="muted" style="font-size:12px;margin-top:8px">Share the code with friends to queue on the same team.</div>`}
-        </div>
+        </div>`}
         <div class="card">
           <h3>Welcome back, ${esc(p.name)}</h3>
-          <div class="controls-grid">
+          ${this.ctx.touch() ? `<div class="controls-grid">
+            <b>Left</b><span>Move with the stick · push it to the edge to sprint · <b>RUN</b> locks sprint</span>
+            <b>Right</b><span>Drag anywhere to look · drag from <b>FIRE</b> to aim while shooting</span>
+            <b>Buttons</b><span><b>AIM</b> scope · <b>JUMP</b> jump/mantle/glide · <b>CROUCH</b> crouch/slide · <b>⟳</b> reload</span>
+            <b>USE</b><span>Appears when you can pick up, open, revive or drive — hold it for caches</span>
+            <b>BUILD</b><span>Pieces replace the hotbar · <b>PLACE</b> builds · <b>◆</b> material · <b>✎</b> edit a wall</span>
+            <b>Tap</b><span>Hotbar to switch items · <b>🎒</b> inventory · minimap for the full map · <b>📍</b> ping</span>
+          </div>` : `<div class="controls-grid">
             <b>WASD</b><span>Move · <b>Shift</b> sprint · <b>C</b> crouch/slide · <b>Space</b> jump/mantle/glide</span>
             <b>Mouse</b><span>Aim · <b>LMB</b> fire · <b>RMB</b> aim down sights · <b>R</b> reload</span>
             <b>1–6</b><span>Harvest tool / inventory slots · wheel to cycle</span>
             <b>Q</b><span>Build mode · <b>F1–F4</b> wall/floor/ramp/roof · <b>G</b> material · <b>T</b> edit</span>
             <b>E</b><span>Interact / pick up / revive · <b>F</b> exit vehicle · <b>X</b> drop</span>
             <b>Tab</b><span>Inventory · <b>M</b> map · <b>V</b> ping · <b>B/N</b> emotes</span>
-          </div>
+          </div>`}
         </div>
       </div>`;
   }
@@ -175,9 +186,10 @@ export class Menus {
           <div class="grid-items scroll">
             ${list.map((c) => `<div class="cos r${c.rarity} ${equipped(c.id) ? 'on' : ''} ${owned.has(c.id) ? '' : 'locked'}" data-cos="${c.id}">
               <div class="swatch" style="${c.colors ? `background:linear-gradient(135deg, ${hex(c.colors.primary)}, ${hex(c.colors.accent)})` : ''}">${owned.has(c.id) ? SLOT_ICON[c.slot] : '🔒'}</div>
-              ${esc(c.name)}<div class="src">${src(c)}</div></div>`).join('')}
+              ${esc(c.name)}<div class="src">${src(c)}</div>
+              ${c.slot === 'emote' && owned.has(c.id) ? `<div class="row" style="justify-content:center;margin-top:4px"><button class="btn small ${p.loadout.emote1 === c.id ? '' : 'ghost'}" data-emote="1" data-eid="${c.id}">1</button><button class="btn small ${p.loadout.emote2 === c.id ? '' : 'ghost'}" data-emote="2" data-eid="${c.id}">2</button></div>` : ''}</div>`).join('')}
           </div>
-          ${this.lockerSlot === 'emote' ? '<div class="muted" style="font-size:12px;margin-top:8px">Click to set emote 1 (B). Shift+click sets emote 2 (N).</div>' : ''}
+          ${this.lockerSlot === 'emote' ? `<div class="muted" style="font-size:12px;margin-top:8px">Pick which emote goes in slot 1 and slot 2${this.ctx.touch() ? ' (the 💃 button plays slot 1)' : ' (B / N in a match)'}.</div>` : ''}
         </div>
         <div class="muted" style="font-size:12px">Cosmetics are purely visual — every character has the same size, hitbox and stats.</div>
       </div>`;
@@ -238,22 +250,35 @@ export class Menus {
     const p = this.ctx.profile();
     const range = (k: keyof Settings, min: number, max: number, step: number) => `<input type="range" data-set="${k}" min="${min}" max="${max}" step="${step}" value="${s[k]}">`;
     const check = (k: keyof Settings) => `<input type="checkbox" data-set="${k}" ${s[k] ? 'checked' : ''}>`;
+    const touch = this.ctx.touch();
+    const head = (t: string) => `<div class="set-head">${t}</div><div></div>`;
     return `<div class="menu-left"></div><div class="menu-right" style="width:min(620px,100%)"><div class="card scroll"><h3>Settings</h3>
       <div class="settings-grid">
         <label>Display name</label><div class="row"><input class="field" id="nm" maxlength="16" value="${esc(p?.name ?? '')}"><button class="btn small" id="rename">Save</button></div>
-        <label>Mouse sensitivity</label>${range('sensitivity', 0.2, 3, 0.05)}
+        ${head(touch ? 'Touch controls' : 'Mouse & keyboard')}
+        ${touch ? `<label>Look sensitivity</label>${range('touchSensitivity', 0.2, 3, 0.05)}
+        <label>Button size</label>${range('buttonScale', 0.7, 1.4, 0.05)}
+        <label>Button opacity</label>${range('buttonOpacity', 0.3, 1, 0.05)}
+        <label>Auto-fire when on target</label>${check('autoFire')}
+        <label>Vibration</label>${check('vibration')}
+        <label>Fullscreen when playing</label>${check('fullscreen')}` : `<label>Mouse sensitivity</label>${range('sensitivity', 0.2, 3, 0.05)}
+        <label>Toggle sprint</label>${check('toggleSprint')}
+        <label>Toggle crouch</label>${check('toggleCrouch')}`}
         <label>ADS sensitivity</label>${range('adsSensitivity', 0.2, 1.5, 0.05)}
-        <label>Field of view</label>${range('fov', 65, 100, 1)}
+        <label>Aim assist (touch & controller)</label>${range('aimAssist', 0, 1, 0.05)}
+        <label>Invert Y</label>${check('invertY')}
+        ${head('Graphics')}
         <label>Graphics quality</label><select class="field" data-set="quality">${['low', 'medium', 'high'].map((q) => `<option ${s.quality === q ? 'selected' : ''}>${q}</option>`).join('')}</select>
+        <label>Field of view</label>${range('fov', 65, 100, 1)}
+        <label>Dynamic resolution</label>${check('dynamicRes')}
+        <label>Frame rate limit</label><select class="field" data-set="fpsCap" data-num="1">${[[0, 'Display rate'], [60, '60 fps'], [30, '30 fps (battery saver)']].map(([v, n]) => `<option value="${v}" ${s.fpsCap === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
+        <label>Show FPS / ping</label>${check('showFps')}
+        ${head('Audio')}
         <label>Master volume</label>${range('master', 0, 1, 0.05)}
         <label>Music volume</label>${range('music', 0, 1, 0.05)}
         <label>Effects volume</label>${range('sfx', 0, 1, 0.05)}
-        <label>Toggle sprint</label>${check('toggleSprint')}
-        <label>Toggle crouch</label>${check('toggleCrouch')}
-        <label>Invert Y</label>${check('invertY')}
-        <label>Show FPS / ping</label>${check('showFps')}
       </div>
-      <div class="muted" style="font-size:12px;margin-top:12px">Graphics quality changes apply after reload. Gamepads are supported automatically.</div>
+      <div class="muted" style="font-size:12px;margin-top:12px">Graphics quality changes apply after reload. Gamepads are supported automatically${touch ? '' : '; touch screens switch to touch controls when you tap'}.</div>
     </div></div>`;
   }
 
@@ -287,6 +312,13 @@ export class Menus {
         else this.ctx.equip({ [c.slot]: id } as Partial<CosmeticLoadout>);
       }),
     );
+    root.querySelectorAll<HTMLButtonElement>('[data-emote]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.ctx.click();
+        this.ctx.equip(b.dataset.emote === '1' ? { emote1: b.dataset.eid } : { emote2: b.dataset.eid });
+      }),
+    );
     root.querySelectorAll<HTMLButtonElement>('[data-buy]').forEach((b) => b.addEventListener('click', () => this.ctx.buy(b.dataset.buy!)));
     $('#rename')?.addEventListener('click', () => this.ctx.rename((root.querySelector('#nm') as HTMLInputElement).value));
     root.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-set]').forEach((inp) =>
@@ -294,7 +326,7 @@ export class Menus {
         const s = { ...this.ctx.settings() };
         const k = inp.dataset.set as keyof Settings;
         if (inp instanceof HTMLInputElement && inp.type === 'checkbox') (s as Record<string, unknown>)[k] = inp.checked;
-        else if (inp instanceof HTMLInputElement) (s as Record<string, unknown>)[k] = Number(inp.value);
+        else if (inp instanceof HTMLInputElement || inp.dataset.num) (s as Record<string, unknown>)[k] = Number(inp.value);
         else (s as Record<string, unknown>)[k] = inp.value;
         this.ctx.saveSettings(s);
       }),

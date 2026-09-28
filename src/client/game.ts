@@ -16,13 +16,15 @@ import { StormState, distanceToSafety, initialStorm, isInStorm, stormCircleAt } 
 import { NO_GROUND, Terrain, biomeAt } from '../shared/terrain';
 import { VEHICLES, VehicleState, quantizeVehicle, seatWorldPos, stepVehicle } from '../shared/vehicle';
 import { AudioEngine } from './audio';
-import { Input, TouchControls } from './input';
-import { Net } from './net';
+import { AssistTarget, applyAssist, onTarget, pickTarget } from './aimassist';
+import { Input, InputSource, TouchContext, TouchControls } from './input';
+import { LocalNet } from './local';
+import { Net, NetLike } from './net';
 import { CharacterModel } from './render/characters';
 import { Effects } from './render/effects';
 import { Environment } from './render/environment';
 import { LootRenderer, PieceRenderer, ProjectileRenderer, PropRenderer, VehicleRenderer } from './render/worldview';
-import { IS_MOBILE, Settings, loadSettings, loadToken, saveSettings, saveToken } from './settings';
+import { HAS_TOUCH, IS_MOBILE, Settings, loadSettings, loadToken, saveSettings, saveToken } from './settings';
 import { Hud, TeamRow } from './ui/hud';
 import { Menus, PartyInfo, PublicProfile } from './ui/menus';
 import { MapPainter } from './ui/minimap';
@@ -104,7 +106,7 @@ export class Game {
   scene = new THREE.Scene();
   camera: THREE.PerspectiveCamera;
   settings: Settings;
-  net: Net;
+  net: NetLike;
   input: Input;
   audio = new AudioEngine();
   touch: TouchControls | null = null;
@@ -142,12 +144,26 @@ export class Game {
   private cameraPos = new THREE.Vector3();
   private fovNow = 80;
   private lastLevel = 0;
+  /** Touch UI active (phones/tablets, or a touch laptop whose last input was a touch). */
+  touchMode = false;
+  /** No game server reachable: matches run in this browser (see client/local.ts). */
+  offline = false;
+  private renderScale = 1;
+  private resCap = 1;
+  private perf = { t: 0, frames: 0, good: 0 };
+  private lastRenderAt = 0;
+  private prevAdsHeld = false;
+  private autoPulse = false;
+  private assistPick: ReturnType<typeof pickTarget> = null;
 
   constructor() {
     this.canvas = document.getElementById('view') as HTMLCanvasElement;
     this.settings = loadSettings();
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: this.settings.quality !== 'low', powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.settings.quality === 'high' ? 2 : this.settings.quality === 'medium' ? 1.25 : 0.85));
+    this.resCap = Math.min(window.devicePixelRatio, this.settings.quality === 'high' ? 2 : this.settings.quality === 'medium' ? 1.25 : IS_MOBILE ? 1 : 0.85);
+    this.renderScale = this.resCap;
+    this.renderer.setPixelRatio(this.renderScale);
+    this.canvas.addEventListener('webglcontextlost', () => this.hud?.toast('Graphics were reset by the device — restoring…', 'warn'));
     this.renderer.shadowMap.enabled = this.settings.quality !== 'low';
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
@@ -224,27 +240,36 @@ export class Game {
         this.audio.ui('click');
       },
       connected: () => this.net.connected,
+      touch: () => this.touchMode,
+      offline: () => this.offline,
     });
     this.preview = new CharacterModel(DEFAULT_LOADOUT);
     this.preview.root.position.set(SKYPORT.x - 1.4, SKYPORT.y, SKYPORT.z - 19);
     this.preview.root.rotation.y = Math.PI * 0.18;
     this.scene.add(this.preview.root);
-    if (IS_MOBILE || 'ontouchstart' in window) {
-      this.touch = new TouchControls(this.input, document.getElementById('app')!, () => this.settings.sensitivity);
+    if (HAS_TOUCH || IS_MOBILE) {
+      this.touch = new TouchControls(this.input, document.getElementById('app')!);
       this.touch.setVisible(false);
-      document.body.classList.add('touch');
     }
+    this.applyTouchLook();
+    this.setTouchMode(IS_MOBILE || (HAS_TOUCH && !matchMedia('(pointer: fine)').matches));
+    this.input.onSource = (src) => this.onInputSource(src);
+    this.bindMobileShell();
     document.getElementById('boot')!.remove();
-    this.net.onMessage = (m) => this.onMessage(m);
-    this.net.onSnapshot = (s) => this.onSnapshot(s);
-    this.net.onOpen = () => {
-      this.net.send({ t: 'hello', token: loadToken(), name: this.settings.name || undefined });
-      this.menus.refresh();
-    };
-    this.net.onClose = () => {
-      this.hud.toast('Connection lost — reconnecting…', 'warn');
-      this.menus.refresh();
-    };
+    // Online when a game server answers; otherwise (static hosting, file://, ?mode=offline) the
+    // server runs right here in the browser against bots.
+    const params = new URLSearchParams(location.search);
+    const want = params.get('mode') ?? (window as { SURGEFALL_MODE?: string }).SURGEFALL_MODE ?? 'auto';
+    if (want === 'offline' || location.protocol === 'file:') this.goOffline(false);
+    else if (want !== 'online' && this.net instanceof Net) {
+      const net = this.net;
+      net.onFirstFailure = () => this.goOffline(true);
+      // a static host rejects the socket at once (onFirstFailure); this covers hosts that hang
+      setTimeout(() => {
+        if (!net.everConnected && this.net === net) this.goOffline(true);
+      }, 6000);
+    }
+    this.bindNet();
     this.net.connect();
     const unlock = () => {
       this.audio.unlock();
@@ -255,8 +280,39 @@ export class Game {
     };
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
+    // iOS only unlocks WebAudio from touchend/click
+    window.addEventListener('touchend', () => this.audio.unlock(), { passive: true });
+    window.addEventListener('click', () => this.audio.unlock());
     this.showMenu();
     requestAnimationFrame(() => this.frame());
+  }
+
+  private bindNet() {
+    this.net.onMessage = (m) => this.onMessage(m);
+    this.net.onSnapshot = (s) => this.onSnapshot(s);
+    this.net.onOpen = () => {
+      this.net.send({ t: 'hello', token: loadToken(this.offline), name: this.settings.name || undefined });
+      this.menus.refresh();
+    };
+    this.net.onClose = () => {
+      this.hud.toast('Connection lost — reconnecting…', 'warn');
+      this.menus.refresh();
+    };
+  }
+
+  /** Switch to the in-browser server (no game server reachable). */
+  private goOffline(connectNow: boolean) {
+    if (this.offline) return;
+    if (this.net instanceof Net) this.net.stop();
+    this.offline = true;
+    const dev = new URLSearchParams(location.search).get('dev') === '1';
+    this.net = new LocalNet({ terrain: this.terrain, map: this.map }, { maxPlayers: IS_MOBILE ? 24 : MATCH_DEFAULTS.maxPlayers, devCommands: dev });
+    document.body.classList.add('offline');
+    if (connectNow) {
+      this.bindNet();
+      this.net.connect();
+    }
+    this.menus?.refresh();
   }
 
   private resetWorld() {
@@ -271,6 +327,83 @@ export class Game {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.applyTouchLook();
+  }
+
+  // ------------------------------------------------------------------ mobile shell
+  /** Button size/opacity CSS variables; buttons shrink on short screens so the layout never collides. */
+  private applyTouchLook() {
+    const auto = Math.max(0.8, Math.min(1.3, window.innerHeight / 380));
+    const st = document.documentElement.style;
+    st.setProperty('--bs', String(+(auto * (this.settings?.buttonScale ?? 1)).toFixed(3)));
+    st.setProperty('--bo', String(this.settings?.buttonOpacity ?? 0.85));
+  }
+
+  private setTouchMode(on: boolean) {
+    if (on && !this.touch) return;
+    this.touchMode = on;
+    document.body.classList.toggle('touch', on);
+    if (this.hud) this.hud.touch = on;
+    this.touch?.setVisible(on && this.state === 'match');
+    if (on) this.input.exitLock();
+    this.menus?.refresh();
+  }
+
+  private onInputSource(src: InputSource) {
+    if (src === 'touch') {
+      if (!this.touchMode) this.setTouchMode(true);
+      else this.touch?.setVisible(this.state === 'match');
+    } else if (this.touchMode && !IS_MOBILE) this.setTouchMode(false);
+    else if (src === 'pad') this.touch?.setVisible(false); // controller on a phone: hide the buttons
+  }
+
+  private bindMobileShell() {
+    // iOS Safari ignores user-scalable=no; block pinch/double-tap zoom and long-press callouts
+    for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('contextmenu', (e) => {
+      if (this.touchMode) e.preventDefault();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        // app switched / screen locked: release held controls so nothing stays pressed
+        this.input.reset();
+        this.touch?.reset();
+        this.audio.ctx?.suspend().catch(() => {});
+      } else {
+        this.audio.ctx?.resume().catch(() => {});
+      }
+    });
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 250));
+  }
+
+  /** Fullscreen + landscape lock on phones (must run inside a user gesture, e.g. the Play tap). */
+  private enterFullscreen() {
+    if (!this.touchMode || !this.settings.fullscreen) return;
+    const el = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => void };
+    try {
+      if (!document.fullscreenElement) {
+        const p = el.requestFullscreen ? el.requestFullscreen({ navigationUI: 'hide' }) : (el.webkitRequestFullscreen?.(), undefined);
+        Promise.resolve(p).then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> })?.lock?.('landscape')).catch(() => {});
+      }
+    } catch {
+      /* unsupported (iPhone Safari) — the rotate hint covers portrait */
+    }
+  }
+
+  private vibrate(ms: number | number[]) {
+    if (!this.touchMode || !this.settings.vibration) return;
+    try {
+      navigator.vibrate?.(ms);
+    } catch {
+      /* not supported */
+    }
+  }
+
+  /** Label for an input hint in prompts ("E", "USE", "X"...). */
+  private keyLabel(a: 'use' | 'exit' | 'jump') {
+    if (this.touchMode) return a === 'use' ? 'USE' : a === 'exit' ? 'EXIT' : 'DROP';
+    if (this.input.usingPad) return a === 'use' ? 'X' : a === 'exit' ? 'X' : 'A';
+    return a === 'use' ? 'E' : a === 'exit' ? 'F' : 'SPACE';
   }
 
   private applySettings(s: Settings) {
@@ -279,6 +412,11 @@ export class Game {
     saveSettings(s);
     this.audio.volumes = { master: s.master, music: s.music, sfx: s.sfx };
     this.audio.applyVolumes();
+    this.applyTouchLook();
+    if (!s.dynamicRes && this.renderScale !== this.resCap) {
+      this.renderScale = this.resCap;
+      this.renderer.setPixelRatio(this.renderScale);
+    }
     if (s.quality !== q) this.hud?.toast('Graphics quality applies after reload', 'warn');
   }
 
@@ -309,6 +447,16 @@ export class Game {
       if (this.hud.inventoryOpen) setTimeout(() => this.refreshInventory(i), 60);
     };
     this.hud.onSpectate = (d) => act({ a: 'spectate', dir: d });
+    this.hud.onBag = () => this.input.push('inventory');
+    this.hud.onMap = () => this.input.push('map');
+    this.hud.onCloseInventory = () => {
+      if (this.m && this.hud.inventoryOpen) this.toggleInventory(this.m, false);
+    };
+    this.hud.onMapMark = (x, z) => {
+      if (!this.m) return;
+      act({ a: 'ping', x, y: Math.max(WATER_LEVEL, this.terrain.surfaceAt(x, z)) + 0.5, z });
+      this.vibrate(8);
+    };
   }
 
   private refreshInventory(sel?: number) {
@@ -320,6 +468,7 @@ export class Game {
   // ------------------------------------------------------------------ menu flow
   private showMenu() {
     this.state = 'menu';
+    document.body.classList.remove('in-match', 'building');
     this.hud.show(false);
     this.touch?.setVisible(false);
     this.menus.closeOverlay();
@@ -331,6 +480,7 @@ export class Game {
   }
 
   private queue(mode: GameMode) {
+    this.enterFullscreen();
     this.audio.unlock();
     this.audio.ui('click');
     this.queueMode = mode;
@@ -342,7 +492,7 @@ export class Game {
   private onMessage(msg: any) {
     switch (msg.t) {
       case 'welcome':
-        saveToken(msg.token);
+        saveToken(msg.token, this.offline);
         this.profile = msg.profile;
         this.lastLevel = msg.profile.level;
         if (!this.settings.name) {
@@ -460,9 +610,11 @@ export class Game {
     this.view.yaw = 0; // face north, toward the island
     this.view.pitch = -0.05;
     this.hud.show(true);
-    this.touch?.setVisible(true);
+    document.body.classList.add('in-match');
+    this.touch?.setVisible(this.touchMode);
+    this.touch?.setSprintLock(false);
     this.input.captureEnabled = true;
-    if (!IS_MOBILE) this.input.requestLock();
+    if (!this.touchMode) this.input.requestLock();
     const phaseMsg = init.phase === 'lobby' ? 'Warm up on the Skyport — builds are free here!' : '';
     if (phaseMsg) this.hud.toast(phaseMsg, '');
     this.hud.toggleBigMap(false);
@@ -594,6 +746,7 @@ export class Game {
         this.fx.damageNumber(new THREE.Vector3(e.x, e.y, e.z), e.d, kind);
         this.hud.hitmarker(e.h ? 'head' : 'hit');
         this.audio.hitmarker(!!e.h, !!e.sh);
+        this.vibrate(e.h ? 18 : 8);
         break;
       }
       case 'hurt': {
@@ -603,6 +756,7 @@ export class Game {
           this.hud.damageDir(-(ang - this.view.yaw));
         }
         this.audio.hurt(m.sim.shield > 0 && e.c !== 'storm' && e.c !== 'fall');
+        if (e.c !== 'storm') this.vibrate(e.d > 30 ? 40 : 20);
         m.shake = Math.min(0.5, m.shake + e.d / 120);
         break;
       }
@@ -623,6 +777,7 @@ export class Game {
         this.hud.toast(`You eliminated <b>${escapeHtml(e.v)}</b>`, 'elim');
         this.hud.hitmarker('kill');
         this.audio.elimination();
+        this.vibrate([30, 40, 30]);
         break;
       case 'elim':
         m.eliminated = true;
@@ -633,6 +788,7 @@ export class Game {
         setTimeout(() => this.hud.banner(null), 3500);
         this.audio.defeat();
         this.hud.closeInventory();
+        this.vibrate(120);
         break;
       case 'spec':
         m.spectating = e.id;
@@ -644,7 +800,7 @@ export class Game {
         this.menus.closeOverlay();
         this.hud.banner('REBORN!', 'Your squad brought you back');
         setTimeout(() => this.hud.banner(null), 3000);
-        if (!IS_MOBILE) this.input.requestLock();
+        if (!this.touchMode) this.input.requestLock();
         break;
       case 'p+':
         this.addPiece(e.p, now);
@@ -935,6 +1091,10 @@ export class Game {
   private frame() {
     requestAnimationFrame(() => this.frame());
     const now = performance.now() / 1000;
+    // optional frame cap (battery saver); the fixed-step sim catches up on the next frame
+    const cap = this.settings.fpsCap;
+    if (cap > 0 && now - this.lastRenderAt < 1 / cap - 0.002) return;
+    this.lastRenderAt = now;
     const rawDt = now - this.last;
     const dt = Math.min(0.1, rawDt);
     // the fixed-step simulation may catch up more than one visual frame so slow devices keep real-time speed
@@ -949,11 +1109,12 @@ export class Game {
       this.fpsAcc.n = 0;
       this.fpsAcc.t = 0;
     }
+    this.adaptResolution(rawDt);
     const m = this.m;
     if (m && this.state === 'match') {
       this.reconcile(m);
       this.handleActions(m);
-      this.applyLook(m);
+      this.applyLook(m, dt);
       this.acc += simDt;
       let steps = 0;
       while (this.acc >= INPUT_DT && steps < 16) {
@@ -969,6 +1130,7 @@ export class Game {
       this.updateRemotes(m, dt);
       this.updateInteract(m);
       this.updateBuild(m);
+      this.updateTouch(m);
       this.updateCamera(m, dt);
       this.updateHud(m, dt);
       this.updateAudio(m, dt);
@@ -989,6 +1151,59 @@ export class Game {
     this.fx.update(dt, this.camera, this.clock, window.innerWidth, window.innerHeight);
     this.hud?.update(dt);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Dynamic resolution: drop the render scale when frames are slow, raise it again after a
+   * sustained stretch of fast frames. Keeps phones responsive in busy fights.
+   */
+  private adaptResolution(rawDt: number) {
+    if (!this.settings.dynamicRes || rawDt > 0.5) return; // ignore hitches (tab switches)
+    const p = this.perf;
+    p.t += rawDt;
+    p.frames++;
+    if (p.t < 1) return;
+    const fps = p.frames / p.t;
+    p.t = 0;
+    p.frames = 0;
+    const cap = this.settings.fpsCap || 60;
+    let next = this.renderScale;
+    if (fps < Math.min(28, cap * 0.8)) {
+      next = Math.max(0.5, this.renderScale * 0.85);
+      p.good = 0;
+    } else if (fps > Math.min(50, cap * 0.92)) {
+      if (++p.good >= 3) {
+        next = Math.min(this.resCap, this.renderScale * 1.1);
+        p.good = 0;
+      }
+    } else p.good = 0;
+    if (Math.abs(next - this.renderScale) > 0.01) {
+      this.renderScale = next;
+      this.renderer.setPixelRatio(next);
+      this.resize();
+    }
+  }
+
+  /** Pick the touch control set for what the player is doing right now. */
+  private updateTouch(m: MatchState) {
+    const t = this.touch;
+    if (!t || !this.touchMode) return;
+    const s = m.sim;
+    let ctx: TouchContext;
+    if (this.paused || this.hud.inventoryOpen) ctx = 'hidden';
+    else if (m.eliminated || s.mode === Mode.Dead) ctx = 'spec';
+    else if (s.mode === Mode.Bus) ctx = 'bus';
+    else if (s.mode === Mode.Skydive || s.mode === Mode.Glide) ctx = 'air';
+    else if (s.mode === Mode.Vehicle) ctx = 'vehicle';
+    else if (s.mode === Mode.Downed) ctx = 'downed';
+    else if (s.mode === Mode.Swim) ctx = 'swim';
+    else ctx = m.buildMode ? 'build' : 'walk';
+    t.setContext(ctx);
+    document.body.classList.toggle('building', ctx === 'build');
+    if (ctx === 'build') {
+      t.setMaterial(['WOOD', 'STONE', 'ALLOY'][m.mat]);
+      t.setPiece(m.piece, false);
+    }
   }
 
   private updateMenuCamera(dt: number) {
@@ -1066,6 +1281,9 @@ export class Game {
       case 'build':
         if (s.mode === Mode.Walk) m.buildMode = !m.buildMode;
         break;
+      case 'sprintLock':
+        this.touch?.setSprintLock(!this.touch.sprintLocked);
+        break;
       case 'wall': case 'floor': case 'ramp': case 'roof':
         if (s.mode !== Mode.Walk) break;
         m.buildMode = true;
@@ -1125,7 +1343,7 @@ export class Game {
     } else {
       this.hud.closeInventory();
       // never grab the cursor while a menu (e.g. the results screen) needs it
-      if (!IS_MOBILE && !this.paused && !m.eliminated && !this.menus.overlayKind) this.input.requestLock();
+      if (!this.touchMode && !this.paused && !m.eliminated && !this.menus.overlayKind) this.input.requestLock();
     }
   }
 
@@ -1139,18 +1357,68 @@ export class Game {
       }, () => this.menus.showSettingsOverlay(this.screens, () => this.togglePause(true)));
     } else {
       this.menus.closeOverlay();
-      if (!IS_MOBILE) this.input.requestLock();
+      if (!this.touchMode) this.input.requestLock();
     }
   }
 
-  private applyLook(m: MatchState) {
-    const { dx, dy } = this.input.consumeLook();
-    if (this.hud.inventoryOpen || this.paused) return;
+  private applyLook(m: MatchState, dt: number) {
+    const look = this.input.consumeLook();
+    const adsHeld = this.input.held('ads');
+    const adsPressed = adsHeld && !this.prevAdsHeld;
+    this.prevAdsHeld = adsHeld;
+    this.assistPick = null;
+    if (this.hud.inventoryOpen || this.paused || this.hud.bigMapOpen) return;
     const w = this.currentWeapon(m);
     const zoom = m.sim.ads && w ? w.zoom : 1;
-    const sens = 0.0022 * this.settings.sensitivity * (m.sim.ads ? this.settings.adsSensitivity / zoom : 1);
-    this.view.yaw = wrapAngle(this.view.yaw - dx * sens);
-    this.view.pitch = Math.max(-1.45, Math.min(1.45, this.view.pitch - dy * sens * (this.settings.invertY ? -1 : 1)));
+    const adsK = m.sim.ads ? this.settings.adsSensitivity / zoom : 1;
+    const inv = this.settings.invertY ? -1 : 1;
+    const mouseK = 0.0022 * this.settings.sensitivity * adsK;
+    const touchK = 0.0048 * this.settings.touchSensitivity * adsK;
+    const dYaw = -(look.mouse.dx + look.pad.dx) * mouseK - look.touch.dx * touchK;
+    const dPitch = (-(look.mouse.dy + look.pad.dy) * mouseK - look.touch.dy * touchK) * inv;
+    // aim assist: touch and controller only (mouse aim is never assisted)
+    const assisted = this.settings.aimAssist > 0 && (this.touchMode || this.input.usingPad) && this.input.source !== 'kbm';
+    const pick = assisted || this.settings.autoFire ? this.findAssistTarget(m, w) : null;
+    this.assistPick = pick;
+    let yaw = wrapAngle(this.view.yaw + dYaw), pitch = this.view.pitch + dPitch;
+    if (assisted && pick) {
+      const ax = this.input.axes();
+      const active = Math.abs(dYaw) + Math.abs(dPitch) > 1e-5 || Math.hypot(ax.x, ax.z) > 0.2 || this.input.held('fire');
+      const out = applyAssist({ yaw: this.view.yaw, pitch: this.view.pitch, lookYaw: dYaw, lookPitch: dPitch, active, ads: m.sim.ads, adsPressed, dt, strength: this.settings.aimAssist }, pick);
+      yaw = out.yaw;
+      pitch = out.pitch;
+    }
+    this.view.yaw = wrapAngle(yaw);
+    this.view.pitch = Math.max(-1.45, Math.min(1.45, pitch));
+  }
+
+  /** Nearest visible enemy near the crosshair (for aim assist / auto-fire). */
+  private findAssistTarget(m: MatchState, w: ReturnType<Game['currentWeapon']>) {
+    const s = m.sim;
+    if (m.eliminated || m.buildMode || s.mode !== Mode.Walk && s.mode !== Mode.Swim) return null;
+    if (!w) return null;
+    const range = Math.min(w.cls === 'melee' ? 4 : w.range, 160);
+    const o = this.aimOrigin(s);
+    const targets: AssistTarget[] = [];
+    for (const r of m.remotes.values()) {
+      if (r.info.team === m.team) continue;
+      const md = r.cur.mode;
+      if (md === Mode.Dead || md === Mode.Bus || md === Mode.Vehicle) continue;
+      const dx = r.pos.x - s.x, dz = r.pos.z - s.z;
+      if (dx * dx + dz * dz > range * range) continue;
+      const y = r.pos.y + (md === Mode.Downed ? 0.35 : r.cur.flags & EF_CROUCH ? 0.85 : 1.15);
+      targets.push({ id: r.id, x: r.pos.x, y, z: r.pos.z });
+    }
+    if (!targets.length) return null;
+    return pickTarget(this.view.yaw, this.view.pitch, o.x, o.y, o.z, targets, {
+      cone: m.sim.ads ? 0.07 : 0.1,
+      maxRange: range,
+      visible: (t) => {
+        const dx = t.x - o.x, dy = t.y - o.y, dz = t.z - o.z;
+        const d = Math.hypot(dx, dy, dz);
+        return !this.world.raycast(o.x, o.y, o.z, dx / d, dy / d, dz / d, d - 0.4, undefined, true);
+      },
+    });
   }
 
   private currentWeapon(m: MatchState) {
@@ -1180,6 +1448,12 @@ export class Game {
     } else if (crouchHeld) b |= BTN.CROUCH;
     if (m.buildMode) b |= BTN.BUILD;
     else if (i.held('fire')) b |= BTN.FIRE;
+    else if (this.settings.autoFire && this.touchMode && onTarget(this.assistPick)) {
+      // auto-fire: hold for automatic weapons, pulse for semi-automatic ones
+      const w = this.currentWeapon(m);
+      this.autoPulse = !this.autoPulse;
+      if (w && w.cls !== 'melee' && (w.auto || this.autoPulse)) b |= BTN.FIRE;
+    }
     if (i.held('ads') && !m.buildMode) b |= BTN.ADS;
     if (i.held('reload')) b |= BTN.RELOAD;
     if (i.held('use')) b |= BTN.USE;
@@ -1433,7 +1707,7 @@ export class Game {
       return;
     }
     if (s.mode === Mode.Vehicle) {
-      this.hud.prompt(`<span class="k">F</span> Exit vehicle`);
+      this.hud.prompt(this.touchMode ? null : `<span class="k">${this.keyLabel('exit')}</span> Exit vehicle`);
       return;
     }
     if (s.mode !== Mode.Walk && s.mode !== Mode.Swim) {
@@ -1441,6 +1715,7 @@ export class Game {
       return;
     }
     const f = forwardFromYawPitch(this.view.yaw, 0);
+    const K = this.keyLabel('use');
     let best: MatchState['target'] = null;
     let bestScore = -1e9;
     let label = '';
@@ -1477,27 +1752,29 @@ export class Game {
         if (it.owner === m.you) continue;
         const o = m.players.get(it.owner ?? -1);
         if (!o || o.team !== m.team) continue;
-        consider('item', it.id, it.x, it.y, it.z, PICKUP_RANGE, 3, `<span class="k">E</span> Pick up <span class="rn" style="color:var(--cyan)">${escapeHtml(o.name)}'s Rebirth Chip</span>`);
+        consider('item', it.id, it.x, it.y, it.z, PICKUP_RANGE, 3, `<span class="k">${K}</span> Pick up <span class="rn" style="color:var(--cyan)">${escapeHtml(o.name)}'s Rebirth Chip</span>`);
         continue;
       }
       const r = RARITIES[it.rarity];
       const cnt = it.count > 1 ? ` ×${it.count}` : '';
-      consider('item', it.id, it.x, it.y + 0.3, it.z, PICKUP_RANGE + 0.3, 2, `<span class="k">E</span> Pick up <span class="rn" style="color:${r.color}">${escapeHtml(stackName(it))}${cnt}</span>`);
+      consider('item', it.id, it.x, it.y + 0.3, it.z, PICKUP_RANGE + 0.3, 2, `<span class="k">${K}</span> Pick up <span class="rn" style="color:${r.color}">${escapeHtml(stackName(it))}${cnt}</span>`);
     }
     for (const c of this.loot.containers.values()) {
       if (c.info.open) continue;
       if (c.info.kind === 'supply' && (c.info.land ?? 0) > this.serverNow()) continue;
       const name = c.info.kind === 'chest' ? 'Open Cache' : c.info.kind === 'ammo' ? 'Open Ammo Crate' : 'Open Supply Drop';
-      consider(c.info.kind, c.info.id, c.info.x, c.info.y + 0.4, c.info.z, INTERACT_RANGE + 0.5, 3, `<span class="k">E</span> Hold · ${name}`);
+      consider(c.info.kind, c.info.id, c.info.x, c.info.y + 0.4, c.info.z, INTERACT_RANGE + 0.5, 3, `<span class="k">${K}</span> Hold · ${name}`);
     }
     for (const r of m.remotes.values()) {
-      if (r.info.team === m.team && r.cur.mode === Mode.Downed) consider('revive', r.id, r.pos.x, r.pos.y, r.pos.z, 2.6, 5, `<span class="k">E</span> Hold · Revive ${escapeHtml(r.info.name)}`);
+      if (r.info.team === m.team && r.cur.mode === Mode.Downed) consider('revive', r.id, r.pos.x, r.pos.y, r.pos.z, 2.6, 5, `<span class="k">${K}</span> Hold · Revive ${escapeHtml(r.info.name)}`);
     }
     if (m.chips.length && m.storm.phase < MATCH_DEFAULTS.rebirthWindowPhase) {
-      this.map.spires.forEach((sp, i) => consider('spire', i + 1, sp.x, sp.y + 1, sp.z, 4.5, 4, `<span class="k">E</span> Hold · Rebirth teammates (${m.chips.length})`));
+      this.map.spires.forEach((sp, i) => consider('spire', i + 1, sp.x, sp.y + 1, sp.z, 4.5, 4, `<span class="k">${K}</span> Hold · Rebirth teammates (${m.chips.length})`));
     }
-    for (const [id, v] of m.vehicles) consider('vehicle', id, v.x, v.y + 0.5, v.z, 4.5, 1, `<span class="k">E</span> Enter Dune Rover`);
+    for (const [id, v] of m.vehicles) consider('vehicle', id, v.x, v.y + 0.5, v.z, 4.5, 1, `<span class="k">${K}</span> Enter Dune Rover`);
     m.target = best;
+    const tk = (best as MatchState['target'])?.kind;
+    this.touch?.setUse(m.channel ? 'HOLD' : !tk ? null : tk === 'item' ? 'PICK UP' : tk === 'revive' ? 'REVIVE' : tk === 'spire' ? 'REBIRTH' : tk === 'vehicle' ? 'DRIVE' : 'OPEN');
     let html = best ? label : null;
     if (m.channel) {
       const k = (this.clock - m.channel.t0) / m.channel.dur;
@@ -1540,8 +1817,8 @@ export class Game {
   // ------------------------------------------------------------------ building
   private updateBuild(m: MatchState) {
     const s = m.sim;
-    this.touch?.setBuildMode(m.buildMode);
-    const canBuild = m.buildMode && !m.eliminated && s.mode === Mode.Walk && m.phase !== 'bus' && m.phase !== 'ended';
+    // players who already jumped from the transport and landed may build (the server allows it too)
+    const canBuild = m.buildMode && !m.eliminated && s.mode === Mode.Walk && m.phase !== 'ended';
     if (!canBuild) {
       this.pieces.setGhost(null, false);
       if (m.buildMode && s.mode !== Mode.Walk && s.mode !== Mode.Mantle) m.buildMode = false;
@@ -1686,7 +1963,8 @@ export class Game {
     if (m.phase === 'lobby') this.hud.setStorm('Skywhale departs in', fmtTime(m.phaseEnd - now), false);
     else if (m.phase === 'bus') {
       const doors = m.bus ? m.bus.t0 + MATCH_DEFAULTS.busDoorsOpen - now : 0;
-      this.hud.setStorm(doors > 0 ? 'Doors open in' : s.mode === Mode.Bus ? 'Press SPACE to jump' : 'Everyone out in', fmtTime(doors > 0 ? doors : (m.bus?.t1 ?? now) - now), false);
+      const jumpHint = this.touchMode ? 'Tap DROP to jump' : `Press ${this.keyLabel('jump')} to jump`;
+      this.hud.setStorm(doors > 0 ? 'Doors open in' : s.mode === Mode.Bus ? jumpHint : 'Everyone out in', fmtTime(doors > 0 ? doors : (m.bus?.t1 ?? now) - now), false);
     } else if (st.stage === 'wait' || st.stage === 'shrink') {
       const dSafe = distanceToSafety({ ...st, stage: 'done', to: st.to } as StormState, now, viewPos.x, viewPos.z);
       const t = st.stage === 'wait' ? `Surge closes in · phase ${st.phase + 1}` : 'Surge closing!';

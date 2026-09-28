@@ -4,7 +4,9 @@ export type ActionName =
   | 'slot0' | 'slot1' | 'slot2' | 'slot3' | 'slot4' | 'slot5' | 'slotNext' | 'slotPrev'
   | 'build' | 'wall' | 'floor' | 'ramp' | 'roof' | 'material' | 'edit' | 'drop'
   | 'inventory' | 'map' | 'emote1' | 'emote2' | 'ping' | 'menu' | 'specPrev' | 'specNext'
-  | 'use' | 'exitVehicle' | 'jumpPress' | 'reload' | 'firePress';
+  | 'use' | 'exitVehicle' | 'jumpPress' | 'reload' | 'firePress' | 'sprintLock';
+
+export type InputSource = 'kbm' | 'touch' | 'pad';
 
 const KEYMAP: Record<string, ActionName> = {
   Digit1: 'slot0', Digit2: 'slot1', Digit3: 'slot2', Digit4: 'slot3', Digit5: 'slot4', Digit6: 'slot5',
@@ -13,21 +15,34 @@ const KEYMAP: Record<string, ActionName> = {
   ArrowLeft: 'specPrev', ArrowRight: 'specNext', KeyE: 'use', KeyF: 'exitVehicle', Space: 'jumpPress', KeyR: 'reload',
 };
 
+export interface LookDelta {
+  mouse: { dx: number; dy: number };
+  pad: { dx: number; dy: number };
+  touch: { dx: number; dy: number }; // screen pixels dragged
+}
+
 export class Input {
   keys = new Set<string>();
   lmb = false;
   rmb = false;
-  lookDX = 0;
-  lookDY = 0;
+  private mouseDX = 0;
+  private mouseDY = 0;
+  private padDX = 0;
+  private padDY = 0;
+  touchDX = 0;
+  touchDY = 0;
   private actions: ActionName[] = [];
   locked = false;
   captureEnabled = false; // true while playing (no menu open)
+  /** Where the latest input came from (drives touch-mode switching and aim assist). */
+  source: InputSource = 'kbm';
+  onSource: (s: InputSource) => void = () => {};
+  private lastTouchAt = -1e9;
   // touch
   touchMove = { x: 0, y: 0 };
   touchButtons = new Set<string>();
   // gamepad
   padMove = { x: 0, y: 0 };
-  padLook = { x: 0, y: 0 };
   padButtons = new Set<string>();
   private padPrev: boolean[] = [];
   usingPad = false;
@@ -38,6 +53,7 @@ export class Input {
       if (e.code === 'Tab' || e.code.startsWith('F') && e.code.length <= 3) e.preventDefault();
       if (e.code === 'Space' && this.captureEnabled) e.preventDefault();
       this.usingPad = false;
+      this.setSource('kbm');
       if (!e.repeat) {
         const a = KEYMAP[e.code];
         if (a) this.actions.push(a);
@@ -45,12 +61,16 @@ export class Input {
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.lmb = this.rmb = false;
-    });
+    window.addEventListener('blur', () => this.reset());
+    // remember touches so the compatibility mouse events a tap generates are ignored
+    window.addEventListener('touchstart', () => {
+      this.lastTouchAt = performance.now();
+      this.setSource('touch');
+    }, { capture: true, passive: true });
     canvas.addEventListener('mousedown', (e) => {
+      if (this.fromTouch()) return;
       this.usingPad = false;
+      this.setSource('kbm');
       if (this.captureEnabled && !this.locked) {
         this.requestLock();
         return;
@@ -69,8 +89,9 @@ export class Input {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
-      this.lookDX += e.movementX;
-      this.lookDY += e.movementY;
+      this.mouseDX += e.movementX;
+      this.mouseDY += e.movementY;
+      if (e.movementX || e.movementY) this.setSource('kbm');
     });
     window.addEventListener('wheel', (e) => {
       if (!this.captureEnabled) return;
@@ -84,8 +105,27 @@ export class Input {
     });
   }
 
+  private fromTouch() {
+    return performance.now() - this.lastTouchAt < 1000;
+  }
+
+  private setSource(s: InputSource) {
+    if (this.source === s) return;
+    this.source = s;
+    this.onSource(s);
+  }
+
+  /** Release everything held (window blur, tab hidden, app switched on a phone). */
+  reset() {
+    this.keys.clear();
+    this.lmb = this.rmb = false;
+    this.touchButtons.clear();
+    this.touchMove = { x: 0, y: 0 };
+    this.mouseDX = this.mouseDY = this.padDX = this.padDY = this.touchDX = this.touchDY = 0;
+  }
+
   requestLock() {
-    if (this.locked) return;
+    if (this.locked || this.fromTouch()) return;
     try {
       const p = this.canvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
       if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -108,10 +148,13 @@ export class Input {
     return a;
   }
 
-  consumeLook() {
-    const r = { dx: this.lookDX, dy: this.lookDY };
-    this.lookDX = 0;
-    this.lookDY = 0;
+  consumeLook(): LookDelta {
+    const r: LookDelta = {
+      mouse: { dx: this.mouseDX, dy: this.mouseDY },
+      pad: { dx: this.padDX, dy: this.padDY },
+      touch: { dx: this.touchDX, dy: this.touchDY },
+    };
+    this.mouseDX = this.mouseDY = this.padDX = this.padDY = this.touchDX = this.touchDY = 0;
     return r;
   }
 
@@ -156,13 +199,16 @@ export class Input {
     const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
     const b = (i: number) => !!gp.buttons[i]?.pressed || (gp.buttons[i]?.value ?? 0) > 0.4;
     const any = Math.abs(lx) + Math.abs(ly) + Math.abs(rx) + Math.abs(ry) > 0 || gp.buttons.some((x) => x.pressed);
-    if (any) this.usingPad = true;
+    if (any) {
+      this.usingPad = true;
+      this.setSource('pad');
+    }
     if (!this.usingPad) return;
     this.padMove.x = lx;
     this.padMove.y = -ly;
     const curve = (v: number) => Math.sign(v) * v * v;
-    this.lookDX += curve(rx) * 900 * dt * sens;
-    this.lookDY += curve(ry) * 600 * dt * sens;
+    this.padDX += curve(rx) * 900 * dt * sens;
+    this.padDY += curve(ry) * 600 * dt * sens;
     const edge = (i: number, a: ActionName) => {
       const now = b(i);
       if (now && !this.padPrev[i]) this.actions.push(a);
@@ -191,6 +237,34 @@ export class Input {
   }
 }
 
+/** Which control set the touch overlay shows. */
+export type TouchContext = 'walk' | 'build' | 'swim' | 'air' | 'bus' | 'vehicle' | 'downed' | 'spec' | 'hidden';
+
+interface TouchButtonDef {
+  cls: string;
+  label: string;
+  hold?: string; // held state in Input.touchButtons
+  act?: ActionName; // action pushed on press
+  look?: boolean; // the finger that presses it may also drag to aim
+  ctx: TouchContext[];
+}
+
+const PLAY: TouchContext[] = ['walk', 'build'];
+const BUTTONS: TouchButtonDef[] = [
+  { cls: 't-fire', label: 'FIRE', hold: 'fire', look: true, ctx: PLAY },
+  { cls: 't-fire2', label: '●', hold: 'fire', look: true, ctx: ['walk'] },
+  { cls: 't-ads', label: 'AIM', hold: 'ads', ctx: ['walk'] },
+  { cls: 't-jump', label: 'JUMP', hold: 'jump', act: 'jumpPress', ctx: ['walk', 'build', 'swim', 'air', 'bus', 'vehicle'] },
+  { cls: 't-crouch', label: 'CROUCH', hold: 'crouch', ctx: PLAY },
+  { cls: 't-reload', label: '⟳', hold: 'reload', act: 'reload', ctx: ['walk'] },
+  { cls: 't-use', label: 'USE', hold: 'use', act: 'use', ctx: ['walk', 'build', 'swim', 'vehicle'] },
+  { cls: 't-build', label: 'BUILD', act: 'build', ctx: PLAY },
+  { cls: 't-sprint', label: 'RUN', act: 'sprintLock', ctx: ['walk'] },
+  { cls: 't-ping', label: '📍', act: 'ping', ctx: ['walk', 'build', 'swim', 'air', 'vehicle'] },
+  { cls: 't-emote', label: '💃', act: 'emote1', ctx: ['walk'] },
+  { cls: 't-menu', label: '☰', act: 'menu', ctx: ['walk', 'build', 'swim', 'air', 'bus', 'vehicle', 'downed', 'spec'] },
+];
+
 /** On-screen touch controls for phones/tablets. */
 export class TouchControls {
   root: HTMLDivElement;
@@ -200,124 +274,202 @@ export class TouchControls {
   private stickOrigin = { x: 0, y: 0 };
   private lookId: number | null = null;
   private lookLast = { x: 0, y: 0 };
-  buildButtons: HTMLDivElement;
+  private buildRow: HTMLDivElement;
+  private buttons = new Map<string, { el: HTMLDivElement; def: TouchButtonDef }>();
+  private ctx: TouchContext = 'hidden';
+  private labels: Record<string, string> = {};
+  private useLabel: string | null = null;
+  sprintLocked = false;
 
-  constructor(private input: Input, parent: HTMLElement, private sens: () => number) {
+  constructor(private input: Input, parent: HTMLElement) {
     const root = document.createElement('div');
     root.id = 'touch';
-    root.innerHTML = `
-      <div class="t-stickzone"><div class="t-stick"><div class="t-knob"></div></div></div>
-      <div class="t-btn t-fire" data-b="fire">FIRE</div>
-      <div class="t-btn t-fire2" data-b="fire">●</div>
-      <div class="t-btn t-ads" data-b="ads">AIM</div>
-      <div class="t-btn t-jump" data-b="jump" data-a="jumpPress">JUMP</div>
-      <div class="t-btn t-crouch" data-b="crouch">CROUCH</div>
-      <div class="t-btn t-reload" data-b="reload" data-a="reload">R</div>
-      <div class="t-btn t-use" data-b="use" data-a="use">USE</div>
-      <div class="t-btn t-build" data-a="build">BUILD</div>
-      <div class="t-btn t-sprint" data-b="sprint">RUN</div>
+    root.innerHTML = `<div class="t-stickzone"><div class="t-stick"><div class="t-knob"></div></div></div>
+      ${BUTTONS.map((b) => `<div class="t-btn ${b.cls}" data-k="${b.cls}"><span>${b.label}</span></div>`).join('')}
       <div class="t-build-row">
-        <div class="t-btn t-sm" data-a="wall">WALL</div><div class="t-btn t-sm" data-a="floor">FLOOR</div>
-        <div class="t-btn t-sm" data-a="ramp">RAMP</div><div class="t-btn t-sm" data-a="roof">ROOF</div>
-        <div class="t-btn t-sm" data-a="material">MAT</div>
-      </div>
-      <div class="t-btn t-map" data-a="map">MAP</div>
-      <div class="t-btn t-inv" data-a="inventory">BAG</div>
-      <div class="t-btn t-menu" data-a="menu">☰</div>`;
+        <div class="t-btn t-sm" data-a="wall"><b>▮</b>WALL</div><div class="t-btn t-sm" data-a="floor"><b>▬</b>FLOOR</div>
+        <div class="t-btn t-sm" data-a="ramp"><b>◢</b>RAMP</div><div class="t-btn t-sm" data-a="roof"><b>▲</b>ROOF</div>
+        <div class="t-btn t-sm t-mat" data-a="material"><b>◆</b><span>WOOD</span></div><div class="t-btn t-sm" data-a="edit"><b>✎</b>EDIT</div>
+      </div>`;
     parent.appendChild(root);
     this.root = root;
     this.stick = root.querySelector('.t-stick')!;
     this.knob = root.querySelector('.t-knob')!;
-    this.buildButtons = root.querySelector('.t-build-row')!;
+    this.buildRow = root.querySelector('.t-build-row')!;
+    for (const def of BUTTONS) this.buttons.set(def.cls, { el: root.querySelector(`[data-k="${def.cls}"]`)!, def });
+
     const zone = root.querySelector('.t-stickzone') as HTMLDivElement;
     zone.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (this.stickId !== null) return;
       const t = e.changedTouches[0];
       this.stickId = t.identifier;
       this.stickOrigin = { x: t.clientX, y: t.clientY };
-      this.stick.style.left = `${t.clientX - 60}px`;
-      this.stick.style.top = `${t.clientY - 60}px`;
+      const r = root.getBoundingClientRect();
+      const half = this.stick.offsetWidth / 2;
+      this.stick.style.left = `${t.clientX - r.left - half}px`;
+      this.stick.style.top = `${t.clientY - r.top - half}px`;
       this.stick.classList.add('on');
-      e.preventDefault();
     }, { passive: false });
-    const moveStick = (e: TouchEvent) => {
+    const onMove = (e: TouchEvent) => {
       for (const t of Array.from(e.changedTouches)) {
         if (t.identifier === this.stickId) {
-          let dx = (t.clientX - this.stickOrigin.x) / 55;
-          let dy = (t.clientY - this.stickOrigin.y) / 55;
+          const reach = this.stick.offsetWidth * 0.45;
+          let dx = (t.clientX - this.stickOrigin.x) / reach;
+          let dy = (t.clientY - this.stickOrigin.y) / reach;
           const l = Math.hypot(dx, dy);
           if (l > 1) {
             dx /= l;
             dy /= l;
           }
           this.input.touchMove = { x: dx, y: -dy };
-          this.knob.style.transform = `translate(${dx * 40}px, ${dy * 40}px)`;
-          if (l > 1.25) this.input.touchButtons.add('sprint');
+          this.knob.style.transform = `translate(calc(-50% + ${dx * reach * 0.8}px), calc(-50% + ${dy * reach * 0.8}px))`;
+          // pushing past the ring sprints
+          if (l > 1.3 || (this.sprintLocked && l > 0.3)) this.input.touchButtons.add('sprint');
           else this.input.touchButtons.delete('sprint');
         } else if (t.identifier === this.lookId) {
-          const s = this.sens();
-          this.input.lookDX += (t.clientX - this.lookLast.x) * 2.2 * s;
-          this.input.lookDY += (t.clientY - this.lookLast.y) * 2.2 * s;
+          this.input.touchDX += t.clientX - this.lookLast.x;
+          this.input.touchDY += t.clientY - this.lookLast.y;
           this.lookLast = { x: t.clientX, y: t.clientY };
         }
       }
     };
-    const endStick = (e: TouchEvent) => {
+    const onEnd = (e: TouchEvent) => {
       for (const t of Array.from(e.changedTouches)) {
-        if (t.identifier === this.stickId) {
-          this.stickId = null;
-          this.input.touchMove = { x: 0, y: 0 };
-          this.knob.style.transform = '';
-          this.stick.classList.remove('on');
-          this.input.touchButtons.delete('sprint');
-        }
+        if (t.identifier === this.stickId) this.releaseStick();
         if (t.identifier === this.lookId) this.lookId = null;
       }
     };
-    window.addEventListener('touchmove', moveStick, { passive: true });
-    window.addEventListener('touchend', endStick);
-    window.addEventListener('touchcancel', endStick);
-    // look: any touch on the canvas right side
+    window.addEventListener('touchmove', onMove, { passive: true });
+    window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onEnd);
+    // look: any touch that doesn't land on a control or on interactive UI
     parent.addEventListener('touchstart', (e) => {
+      if (this.ctx === 'hidden') return;
       for (const t of Array.from(e.changedTouches)) {
         const el = t.target as HTMLElement;
-        if (el.closest('.t-btn') || el.closest('.t-stickzone') || el.closest('.ui-interactive')) continue;
-        if (this.lookId === null && t.clientX > window.innerWidth * 0.35) {
+        if (el.closest('.t-btn, .t-stickzone, .ui-interactive, .interactive, #minimap')) continue;
+        if (this.lookId === null) {
           this.lookId = t.identifier;
           this.lookLast = { x: t.clientX, y: t.clientY };
         }
       }
     }, { passive: true });
-    for (const b of Array.from(root.querySelectorAll<HTMLDivElement>('.t-btn'))) {
-      const hold = b.dataset.b;
-      const act = b.dataset.a as ActionName | undefined;
-      b.addEventListener('touchstart', (e) => {
+
+    for (const { el, def } of this.buttons.values()) {
+      el.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        b.classList.add('down');
-        if (hold) this.input.touchButtons.add(hold);
-        if (act) this.input.push(act);
-        if (hold === 'fire') this.input.push('firePress');
-        // allow looking while holding fire
-        const t = e.changedTouches[0];
-        if (hold === 'fire' && this.lookId === null) {
+        e.stopPropagation();
+        el.classList.add('down');
+        if (def.hold) this.input.touchButtons.add(def.hold);
+        if (def.act) this.input.push(def.act === 'use' && this.ctx === 'vehicle' ? 'exitVehicle' : def.act);
+        if (def.hold === 'fire') this.input.push('firePress');
+        if (def.look && this.lookId === null) {
+          const t = e.changedTouches[0];
           this.lookId = t.identifier;
           this.lookLast = { x: t.clientX, y: t.clientY };
         }
       }, { passive: false });
       const up = (e: TouchEvent) => {
         e.preventDefault();
-        b.classList.remove('down');
-        if (hold) this.input.touchButtons.delete(hold);
+        el.classList.remove('down');
+        if (def.hold) this.input.touchButtons.delete(def.hold);
       };
-      b.addEventListener('touchend', up, { passive: false });
-      b.addEventListener('touchcancel', up, { passive: false });
+      el.addEventListener('touchend', up, { passive: false });
+      el.addEventListener('touchcancel', up, { passive: false });
     }
+    for (const el of Array.from(this.buildRow.querySelectorAll<HTMLDivElement>('[data-a]'))) {
+      el.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.input.push(el.dataset.a as ActionName);
+        el.classList.add('down');
+      }, { passive: false });
+      el.addEventListener('touchend', () => el.classList.remove('down'));
+      el.addEventListener('touchcancel', () => el.classList.remove('down'));
+    }
+  }
+
+  private releaseStick() {
+    this.stickId = null;
+    this.input.touchMove = { x: 0, y: 0 };
+    this.knob.style.transform = '';
+    this.stick.classList.remove('on');
+    this.stick.style.left = this.stick.style.top = '';
+    this.input.touchButtons.delete('sprint');
+  }
+
+  /** Drop all touch state (context switch, app backgrounded). */
+  reset() {
+    this.releaseStick();
+    this.lookId = null;
+    this.input.touchButtons.clear();
+    for (const { el } of this.buttons.values()) el.classList.remove('down');
   }
 
   setVisible(v: boolean) {
     this.root.style.display = v ? '' : 'none';
+    if (!v) this.reset();
   }
 
-  setBuildMode(v: boolean) {
-    this.buildButtons.style.display = v ? 'flex' : 'none';
+  setContext(ctx: TouchContext) {
+    if (ctx === this.ctx) return;
+    this.ctx = ctx;
+    this.root.dataset.ctx = ctx;
+    for (const { el, def } of this.buttons.values()) {
+      const on = def.ctx.includes(ctx);
+      el.classList.toggle('off', !on);
+      if (!on && def.hold && this.input.touchButtons.has(def.hold)) {
+        this.input.touchButtons.delete(def.hold);
+        el.classList.remove('down');
+      }
+    }
+    this.buildRow.classList.toggle('off', ctx !== 'build');
+    this.setLabel('t-jump', ctx === 'bus' ? 'DROP' : ctx === 'air' ? 'GLIDE' : ctx === 'vehicle' ? 'BRAKE' : 'JUMP');
+    this.setLabel('t-fire', ctx === 'build' ? 'PLACE' : 'FIRE');
+    this.setLabel('t-build', ctx === 'build' ? '🔫' : 'BUILD');
+    if (ctx === 'hidden' || ctx === 'spec') this.releaseStick();
+    this.refreshUse();
+  }
+
+  private setLabel(cls: string, text: string) {
+    if (this.labels[cls] === text) return;
+    this.labels[cls] = text;
+    const span = this.buttons.get(cls)?.el.querySelector('span');
+    if (span) span.textContent = text;
+  }
+
+  /** Contextual USE button: the label names the action, hidden when there is nothing to do. */
+  setUse(label: string | null) {
+    if (label === this.useLabel) return;
+    this.useLabel = label;
+    this.refreshUse();
+  }
+
+  private refreshUse() {
+    const b = this.buttons.get('t-use')!;
+    const label = this.ctx === 'vehicle' ? 'EXIT' : this.useLabel;
+    this.setLabel('t-use', label ?? 'USE');
+    b.el.classList.toggle('off', !label || !b.def.ctx.includes(this.ctx));
+  }
+
+  setMaterial(name: string) {
+    const span = this.buildRow.querySelector('.t-mat span');
+    if (span && span.textContent !== name) span.textContent = name;
+  }
+
+  setPiece(piece: string, editing: boolean) {
+    for (const el of Array.from(this.buildRow.querySelectorAll<HTMLDivElement>('[data-a]'))) {
+      el.classList.toggle('sel', el.dataset.a === piece || (editing && el.dataset.a === 'edit'));
+    }
+  }
+
+  setSprintLock(on: boolean) {
+    this.sprintLocked = on;
+    this.buttons.get('t-sprint')!.el.classList.toggle('sel', on);
+  }
+
+  get context() {
+    return this.ctx;
   }
 }

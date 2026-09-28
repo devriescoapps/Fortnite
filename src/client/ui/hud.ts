@@ -3,6 +3,9 @@ import { AMMO_NAMES, AMMO_TYPES, ITEM_BY_CODE, ItemStack, RARITIES, RARITY_RELOA
 import type { PieceType } from '../../shared/build';
 import { MapMarks, MapPainter } from './minimap';
 
+/** World half-extent shown by the full map (centered on the island). */
+export const BIGMAP_HALF = 640;
+
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 export function itemGlyph(code: number) {
@@ -54,6 +57,14 @@ export class Hud {
   onDropMat: (i: number) => void = () => {};
   onSelectSlot: (i: number) => void = () => {};
   onSpectate: (dir: 1 | -1) => void = () => {};
+  onBag: () => void = () => {};
+  onMap: () => void = () => {};
+  onCloseInventory: () => void = () => {};
+  /** Tap/click on the full map: world x/z of the marker. */
+  onMapMark: (x: number, z: number) => void = () => {};
+  /** Touch devices: tap-to-move instead of drag and drop. */
+  touch = false;
+  private moveFrom = -1;
 
   constructor(root: HTMLElement, private painter: MapPainter) {
     this.root = root;
@@ -94,12 +105,25 @@ export class Hud {
     this.feedEl = root.querySelector('.feed') as HTMLElement;
     root.querySelectorAll<HTMLButtonElement>('[data-spec]').forEach((b) => b.addEventListener('click', () => this.onSpectate(Number(b.dataset.spec) as 1 | -1)));
 
+    this.minimap.addEventListener('click', () => this.onMap());
+
     this.bigmap = document.createElement('div');
     this.bigmap.className = 'bigmap hidden';
+    this.bigmap.innerHTML = '<div class="bigmap-inner"><button class="btn small ghost close-x" aria-label="Close map">✕</button><div class="bigmap-hint muted">Tap the map to mark a spot for your team</div></div>';
     this.bigCanvas = document.createElement('canvas');
     this.bigCanvas.width = this.bigCanvas.height = 900;
-    this.bigmap.appendChild(this.bigCanvas);
+    this.bigmap.firstElementChild!.prepend(this.bigCanvas);
     root.appendChild(this.bigmap);
+    this.bigmap.querySelector('.close-x')!.addEventListener('click', () => this.onMap());
+    this.bigmap.addEventListener('click', (e) => {
+      if (e.target === this.bigmap) this.onMap(); // tap outside the map closes it
+    });
+    this.bigCanvas.addEventListener('click', (e) => {
+      const r = this.bigCanvas.getBoundingClientRect();
+      const u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
+      if (u < 0 || u > 1 || v < 0 || v > 1) return;
+      this.onMapMark((u * 2 - 1) * BIGMAP_HALF, (v * 2 - 1) * BIGMAP_HALF);
+    });
 
     this.inv = document.createElement('div');
     this.inv.className = 'overlay hidden ui-interactive';
@@ -138,10 +162,11 @@ export class Hud {
       const r = RARITIES[s.rarity];
       const ct = d.weapon ? (d.weapon.ammo ? s.mag : '') : s.count > 1 ? s.count : '';
       return `<div class="hslot r${s.rarity} ${i === sel && !build ? 'on' : ''}" data-i="${i}" style="--rc:${r.color}" title="${esc(d.name)}"><div class="rar"></div><span class="key">${i + 1}</span><span class="glyph">${itemGlyph(s.code)}</span><span class="nm">${esc(d.name.split(' ')[0])}</span><span class="ct">${ct}</span></div>`;
-    }).join('');
+    }).join('') + '<div class="hslot hbag" data-bag="1"><span class="glyph">🎒</span><span class="nm">BAG</span></div>';
     if (this.cache.hotbar !== html) {
       this.set('hotbar', html);
-      this.el.hotbar.querySelectorAll<HTMLElement>('.hslot').forEach((e) => e.addEventListener('click', () => this.onSelectSlot(Number(e.dataset.i))));
+      this.el.hotbar.querySelectorAll<HTMLElement>('.hslot[data-i]').forEach((e) => e.addEventListener('click', () => this.onSelectSlot(Number(e.dataset.i))));
+      this.el.hotbar.querySelector('.hbag')!.addEventListener('click', () => this.onBag());
     }
   }
 
@@ -300,7 +325,7 @@ export class Hud {
     const me = marks.me;
     const cx = me ? me.x : 0, cz = me ? me.z : 0;
     this.painter.draw(this.minimap, marks, cx, cz, 120, false, time);
-    if (this.bigMapOpen) this.painter.draw(this.bigCanvas, marks, 0, 0, 640, true, time);
+    if (this.bigMapOpen) this.painter.draw(this.bigCanvas, marks, 0, 0, BIGMAP_HALF, true, time);
   }
 
   toggleBigMap(v?: boolean) {
@@ -311,6 +336,7 @@ export class Hud {
   // ---------------------------------------------------------------- inventory
   openInventory(slots: (ItemStack | null)[], ammo: number[], mats: number[], sel: number) {
     this.inventoryOpen = true;
+    this.moveFrom = -1;
     this.inv.classList.remove('hidden');
     this.renderInventory(slots, ammo, mats, sel);
   }
@@ -336,22 +362,37 @@ export class Hud {
           : line('Accuracy', 8 - w.spreadAds, 8, `${Math.max(0, 100 - w.spreadAds * 12).toFixed(0)}%`) + line('Range', w.falloffEnd, 800, `${w.range}m`)) +
         (w.ammo ? `<div class="muted" style="font-size:12px">Uses ${AMMO_NAMES[w.ammo]} · headshot ×${w.headMult}</div>` : '');
     }
-    this.inv.innerHTML = `<div class="dialog" style="min-width:min(760px,96vw)">
-      <h2>Inventory</h2><div class="muted" style="font-size:13px">Drag items between slots to rearrange · click to inspect · Tab to close</div>
+    const moving = this.moveFrom > 0 && !!slots[this.moveFrom];
+    const hint = this.touch
+      ? moving ? `<b style="color:var(--sun)">Tap a slot to move ${esc(ITEM_BY_CODE[slots[this.moveFrom]!.code].name)} there</b>` : 'Tap an item to inspect · Move to rearrange'
+      : 'Drag items between slots to rearrange · click to inspect · Tab to close';
+    this.inv.innerHTML = `<div class="dialog inv-dialog">
+      <button class="btn small ghost close-x" id="invclose" aria-label="Close inventory">✕</button>
+      <h2>Inventory</h2><div class="muted inv-hint">${hint}</div>
       <div class="inv">${slots.map((s, i) => {
-        if (!s) return `<div class="islot" data-i="${i}"></div>`;
+        const cls = `${i === sel ? 'sel' : ''} ${moving && i === this.moveFrom ? 'moving' : ''} ${moving && i > 0 && i !== this.moveFrom ? 'target' : ''}`;
+        if (!s) return `<div class="islot ${cls}" data-i="${i}"></div>`;
         const dd = ITEM_BY_CODE[s.code];
-        return `<div class="islot filled r${s.rarity}" draggable="${i > 0}" data-i="${i}" style="--rc:${RARITIES[s.rarity].color}"><span style="font-size:24px">${itemGlyph(s.code)}</span><b>${esc(dd.name)}</b><span class="muted">${RARITIES[s.rarity].name}</span><span class="ct">${dd.weapon?.ammo ? s.mag : s.count > 1 ? s.count : ''}</span></div>`;
+        return `<div class="islot filled r${s.rarity} ${cls}" draggable="${i > 0 && !this.touch}" data-i="${i}" style="--rc:${RARITIES[s.rarity].color}"><span class="ig">${itemGlyph(s.code)}</span><b>${esc(dd.name)}</b><span class="muted">${RARITIES[s.rarity].name}</span><span class="ct">${dd.weapon?.ammo ? s.mag : s.count > 1 ? s.count : ''}</span></div>`;
       }).join('')}</div>
       ${d ? `<div class="inv-detail"><b style="color:${RARITIES[detail!.rarity].color};font-size:18px">${esc(d.name)}</b> <span class="muted">${esc(d.desc)}</span>${stats}
-        ${sel > 0 && slots[sel] ? `<div style="margin-top:8px"><button class="btn small warn" id="dropsel">Drop</button></div>` : ''}</div>` : ''}
+        ${sel > 0 && slots[sel] ? `<div class="row" style="margin-top:8px"><button class="btn small" id="equipsel">Equip</button>${this.touch ? `<button class="btn small ghost" id="movesel">${moving ? 'Cancel move' : 'Move'}</button>` : ''}<button class="btn small warn" id="dropsel">Drop</button></div>` : ''}</div>` : ''}
       <div class="ammo-row">${AMMO_TYPES.map((a, i) => `<div class="pill interactive">${AMMO_NAMES[a]}: <b>${ammo[i]}</b>${ammo[i] ? `<button class="btn small ghost" data-da="${i}">drop</button>` : ''}</div>`).join('')}</div>
       <div class="ammo-row">${['Timber', 'Stone', 'Alloy'].map((m, i) => `<div class="pill">${m}: <b>${mats[i]}</b>${mats[i] ? `<button class="btn small ghost" data-dm="${i}">drop 30</button>` : ''}</div>`).join('')}</div>
     </div>`;
     let dragFrom = -1;
     this.inv.querySelectorAll<HTMLElement>('.islot').forEach((e) => {
       const i = Number(e.dataset.i);
-      e.addEventListener('click', () => this.onSelectSlot(i));
+      e.addEventListener('click', () => {
+        if (this.moveFrom > 0) {
+          const from = this.moveFrom;
+          this.moveFrom = -1;
+          if (i > 0 && i !== from) this.onSwap(from, i);
+          else this.renderInventory(slots, ammo, mats, sel);
+          return;
+        }
+        this.onSelectSlot(i);
+      });
       e.addEventListener('dragstart', () => (dragFrom = i));
       e.addEventListener('dragover', (ev) => {
         ev.preventDefault();
@@ -363,6 +404,15 @@ export class Hud {
         e.classList.remove('dragover');
         if (dragFrom > 0 && i > 0 && dragFrom !== i) this.onSwap(dragFrom, i);
       });
+    });
+    this.inv.querySelector('#invclose')?.addEventListener('click', () => this.onCloseInventory());
+    this.inv.querySelector('#equipsel')?.addEventListener('click', () => {
+      this.onSelectSlot(sel);
+      this.onCloseInventory();
+    });
+    this.inv.querySelector('#movesel')?.addEventListener('click', () => {
+      this.moveFrom = this.moveFrom > 0 ? -1 : sel;
+      this.renderInventory(slots, ammo, mats, sel);
     });
     this.inv.querySelector('#dropsel')?.addEventListener('click', () => this.onDrop(sel));
     this.inv.querySelectorAll<HTMLElement>('[data-da]').forEach((b) => b.addEventListener('click', () => this.onDropAmmo(Number(b.dataset.da))));

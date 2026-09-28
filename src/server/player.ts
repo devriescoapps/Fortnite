@@ -54,6 +54,8 @@ export class ServerPlayer {
   overTime = 0; // fizzpop remaining
   chips: number[] = []; // rebirth chips carried (player ids)
   landed = false;
+  /** Test helper (dev commands only): ignore all damage. */
+  god = false;
   vehicleId = 0;
   seat = 0;
   lastPos = { x: 0, z: 0 };

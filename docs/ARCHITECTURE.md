@@ -3,7 +3,7 @@
 ## Overview
 
 ```
- Browser client (per player)                          Node game server (one process)
+ Browser client (per player)       (offline: the whole right-hand side runs inside the page)                          Node game server (one process)
 ┌──────────────────────────────────────┐            ┌───────────────────────────────────────────┐
 │ Input (KBM / touch / gamepad)         │            │ main.ts  HTTP static + WebSocket gateway  │
 │   └─► InputCmd @60Hz ──────────────── binary ───►  │   rate limits, message validation         │
@@ -85,6 +85,17 @@ with a smoothed offset.
 - Spatially relevant events (shots, sounds, harvest FX) are only sent within a radius.
 - Typical snapshot: ~30 bytes per visible player; a 32-player match is a few KB/s per client.
 
+### Offline mode (server in the browser)
+Session handling (`server/gateway.ts`) is independent of the transport. The Node server wires it
+to WebSockets; when no server is reachable (static hosting, `file://`, `?mode=offline`) the client
+creates a `LocalNet` (`client/local.ts`) that runs the same `Gateway` → `Matchmaker` → `Match`
+(with bots) inside the page, driven by the same drift-corrected 30 Hz loop. Client → server
+messages are applied synchronously (preserving action/input order), server → client messages are
+delivered in a microtask, snapshot buffers are copied and JSON messages cloned, and inputs still go
+through the binary encoder. Profiles persist to `localStorage` through a pluggable
+`ProfileBackend` (a JSON file on the Node server). The island is generated once and shared by the
+local server and the renderer.
+
 ### Reliability & sessions
 - Profiles are keyed by a random token stored in `localStorage`.
 - Disconnects mid-match leave the character in the world for `reconnectGrace` (45 s);
@@ -117,6 +128,11 @@ with a smoothed offset.
 - Quality presets: shadows (off/1024/2048), pixel ratio, draw distance, antialiasing; mobile
   defaults to low.
 - Fixed-step simulation catches up to 250 ms per frame, so slow devices keep real-time speed.
+- Dynamic resolution (default on phones): the render scale drops 15 % when a second averages
+  under 28 fps and rises again after three fast seconds; optional 30/60 fps frame cap.
+- Touch controls are DOM, scaled by one CSS variable (`--bs`, from screen height × the button-size
+  setting) so the layout keeps its shape on any phone; the crosshair and full-screen overlays are
+  viewport-fixed so safe-area insets never shift them off the camera center.
 
 **Server**
 - Spatial hash (8 m cells) for all colliders; 2D DDA raycasts; terrain ray-march with bisection.

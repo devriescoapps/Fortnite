@@ -11,10 +11,10 @@ sound is synthesized with WebAudio. There are no external art or audio assets.
 
 | | |
 |---|---|
-| **Client** | TypeScript + Three.js, HTML/CSS UI, WebAudio synthesis, keyboard/mouse, touch and gamepad |
-| **Server** | Node.js + `ws`, authoritative 30 Hz simulation, binary snapshots, bots |
+| **Client** | TypeScript + Three.js, HTML/CSS UI, WebAudio synthesis, keyboard/mouse, touch (phones/tablets) and gamepad |
+| **Server** | Node.js + `ws`, authoritative 30 Hz simulation, binary snapshots, bots — or running inside the browser for offline play |
 | **Shared** | Deterministic simulation code used by both sides (movement, weapons, building, collision, map) |
-| **Tests** | 31 Vitest tests (unit, full-match simulations, networked integration) + Playwright browser e2e |
+| **Tests** | 39 Vitest tests (unit, full-match simulations, networked + offline integration) + Playwright desktop and mobile (multi-touch) e2e |
 
 ## Quick start
 
@@ -28,6 +28,23 @@ player gets a full match. Open a second tab (or share your LAN address) for real
 use **Create party** + a party code to queue on the same team.
 
 Development: `npm run dev` (esbuild watch) in one terminal and `npm start` in another.
+
+### Put it online / share it
+
+```bash
+npm run export
+```
+
+creates two uploadable packages in `export/`:
+
+- **`surgefall-web.zip`** — a static HTML5 build for **itch.io, Netlify, GitHub Pages** or any web
+  space (or just open `index.html`). The game server runs *inside the browser*, so you play full
+  matches against bots, on desktop or phone. Progress is saved on the device.
+- **`surgefall-server.zip`** — the real multiplayer server with the client built in; runs with
+  `node dist/server.cjs` (no `npm install`) or Docker, e.g. on Render, Railway or Fly.io.
+
+Step-by-step instructions: [docs/DEPLOY.md](docs/DEPLOY.md). This repository also has a
+`Dockerfile` for deploying straight from GitHub.
 
 ### Configuration (environment variables)
 
@@ -48,18 +65,22 @@ Development: `npm run dev` (esbuild watch) in one terminal and `npm start` in an
 
 | Action | Keyboard / mouse | Gamepad | Touch |
 |---|---|---|---|
-| Move / look | WASD / mouse | Left / right stick | Left joystick / drag right side |
-| Jump · mantle · deploy glider | Space | A | JUMP |
-| Sprint | Shift (hold or toggle) | L3 | RUN or push stick far |
+| Move / look | WASD / mouse | Left / right stick | Floating stick / drag anywhere on the right (also from FIRE) |
+| Jump · mantle · deploy glider | Space | A | JUMP (DROP on the transport, GLIDE in the air) |
+| Sprint | Shift (hold or toggle) | L3 | Push the stick past its ring · RUN locks sprint |
 | Crouch · slide (while sprinting) | C / Ctrl | B | CROUCH |
-| Fire · aim down sights | LMB · RMB | RT · LT | FIRE · AIM |
-| Reload | R | X | R |
-| Interact / pick up / open / revive / drive | E (hold for caches, revives) | X (hold) | USE |
-| Exit vehicle | F | | |
-| Harvest tool / slots | 1 · 2–6 · wheel | LB / RB | tap hotbar |
-| Build mode · pieces · material · edit wall | Q · F1–F4 · G · T | Y · LB/RB · D-pad up | BUILD · WALL/FLOOR/RAMP/ROOF/MAT |
-| Drop held item | X | D-pad down | inventory |
-| Inventory · map · ping · emotes | Tab · M · V / MMB · B, N | Menu buttons | BAG · MAP |
+| Fire · aim down sights | LMB · RMB | RT · LT | FIRE (or ● on the left) · AIM |
+| Reload | R | X | ⟳ |
+| Interact / pick up / open / revive / drive | E (hold for caches, revives) | X (hold) | Contextual button: PICK UP / OPEN / REVIVE / DRIVE |
+| Exit vehicle | F | | EXIT |
+| Harvest tool / slots | 1 · 2–6 · wheel | LB / RB | Tap the hotbar |
+| Build mode · pieces · material · edit wall | Q · F1–F4 · G · T | Y · LB/RB · D-pad up | BUILD → piece row replaces the hotbar · PLACE · ◆ · ✎ |
+| Drop held item | X | D-pad down | Inventory → Drop |
+| Inventory · map · ping · emotes | Tab · M · V / MMB · B, N | Menu buttons | 🎒 · tap the minimap (tap the map to mark) · 📍 · 💃 |
+
+Touch and controller players get optional **aim assist** (friction, a gentle pull, a snap on AIM;
+never for the mouse). Touch adds optional auto-fire, vibration, button size/opacity and look
+sensitivity settings. Phones play in landscape (fullscreen + orientation lock where supported).
 
 **Match flow:** Main menu → Play → matchmaking → **Skyport** (pre-game warm-up; building is
 free) → the **Skywhale** flies across the island (jump when you like) → skydive → auto-deploy
@@ -102,8 +123,12 @@ glider → loot → fight → Surge phases shrink the map → last team standing
   the vehicle you drive),
   interpolation, lag-compensated hitscan and bullets, interest management, binary snapshots,
   reconnect, spectating, parties, bots that use the exact same input pipeline as humans.
-- **Platforms**: desktop (keyboard/mouse, gamepad), mobile (touch controls, auto low quality),
+- **Platforms**: desktop (keyboard/mouse, gamepad) and phones/tablets: context-aware touch
+  controls that never overlap (auto-scaled, safe-area aware), aim assist, haptics, tap-to-move
+  inventory, tap-to-mark map, web app manifest, dynamic resolution, 30 fps battery saver,
   quality presets (shadows, draw distance, pixel ratio).
+- **Offline play**: with no server around (static hosting, opened from disk) the authoritative
+  server runs inside the browser against bots — same code, same rules.
 
 ## Project layout
 
@@ -115,15 +140,16 @@ src/shared/   deterministic game code used by both server and client
   items.ts      weapons & items  storm.ts     shrinking zone
   vehicle.ts    Rover physics    protocol.ts  binary + JSON wire formats
   progression.ts levels/pass/challenges/cosmetics
-src/server/   authoritative server
-  main.ts  http+ws gateway, loop     matchmaker.ts queues, parties, matches
-  match.ts match lifecycle, combat, loot, storm, vehicles, replication
-  bot.ts   AI players                profiles.ts   persistence + rewards
+src/server/   authoritative server (Node, or in the browser for offline play)
+  main.ts  http+ws server            gateway.ts   sessions, validation, loop (transport-agnostic)
+  matchmaker.ts queues, parties      match.ts     lifecycle, combat, loot, storm, vehicles, replication
+  bot.ts   AI players                profiles.ts  persistence + rewards (file or localStorage backend)
 src/client/   browser client
-  game.ts  prediction, interpolation, camera, events   input.ts audio.ts net.ts
+  game.ts  prediction, interpolation, camera, events   input.ts (keyboard/mouse, touch, gamepad)
+  net.ts   WebSocket link   local.ts in-browser server link   aimassist.ts   audio.ts
   render/  environment, world view, characters, models, effects
   ui/      hud, menus, minimap
-tests/        vitest suites        scripts/  build + browser e2e
+tests/        vitest suites        scripts/  build, export (zip), desktop + mobile browser e2e
 docs/         design documents
 ```
 
@@ -131,9 +157,11 @@ docs/         design documents
 
 ```bash
 npm run typecheck
-npm test                      # 31 tests: sim, systems, full bot matches, networked play
+npm test                      # 39 tests: sim, systems, aim assist, full bot matches, networked + offline play
 DEV_COMMANDS=1 npm start &    # then, in another shell:
 QUALITY=low npm run e2e -- http://localhost:8080 screenshots
+npm run e2e:mobile -- http://localhost:8080 screenshots/mobile     # multi-touch on an emulated phone
+# the offline export works too: npm run export, serve export/web, run e2e:mobile on "http://host/?dev=1"
 ```
 
 The e2e script drives the real game in headless Chromium: menu → locker → lobby → build →
@@ -141,6 +169,10 @@ transport → jump → skydive/glide → land → loot a cache → harvest → f
 DMR → drive a Rover →
 map → inventory → results/spectate → back to lobby with XP applied, saving screenshots of each
 step. Options: `MODE=duos|squads`, `FORCE_ELIM=1` (exercise results/spectating), `QUALITY=low|medium|high`.
+The mobile e2e drives real multi-touch (stick + look at once) through 38 checks: layout,
+movement, building, dropping from the transport, hotbar, firing, inventory, map markers, opening a
+cache with the contextual button, driving, the portrait hint and overlap scans. `DEVICE=` picks
+any Playwright device (default *iPhone 13 Pro Max landscape*).
 
 ## Documentation
 
@@ -149,6 +181,7 @@ step. Options: `MODE=duos|squads`, `FORCE_ELIM=1` (exercise results/spectating),
   data structures, networking, gameplay logic, implementation steps and testing requirements
 - [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) — the original game bible: world, locations, weapons,
   items, economy, progression, art and audio direction
+- [docs/DEPLOY.md](docs/DEPLOY.md) — putting the game online (itch.io, Netlify, GitHub Pages, Render, Docker)
 
 ## Status and honest limitations
 
@@ -156,4 +189,5 @@ This is a playable, tested prototype, not a shipped product. Notable gaps (track
 [docs/PHASES.md](docs/PHASES.md)): the underground bunker has no special lighting pass; bots navigate with local avoidance rather than
 a navmesh; persistence is a JSON file (swap for a database for real deployments); a single
 server process hosts all matches (no horizontal scaling/region routing); there is no
-skill-based matchmaking.
+skill-based matchmaking; offline mode is single-player (friends need the multiplayer server);
+the touch layout is fixed (no drag-to-customize editor yet).

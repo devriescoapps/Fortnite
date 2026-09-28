@@ -8,7 +8,8 @@ const client = {
   entryPoints: ['src/client/main.ts'],
   bundle: true,
   outfile: 'dist/client/game.js',
-  format: 'esm',
+  // classic script (not a module) so the build also runs from file:// and any static host
+  format: 'iife',
   target: ['es2022'],
   sourcemap: !prod,
   minify: prod,

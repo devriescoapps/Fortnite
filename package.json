@@ -11,7 +11,9 @@
     "play": "node scripts/build.mjs && node dist/server.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "export": "node scripts/export.mjs",
+    "e2e:mobile": "node scripts/e2e-mobile.mjs"
   },
   "engines": {
     "node": ">=20"
